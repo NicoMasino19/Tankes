@@ -1,0 +1,23 @@
+{
+  "name": "tankes",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "server",
+    "client",
+    "shared"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "npm run build -w @tankes/shared && concurrently -n SHARED,SERVER,CLIENT -c cyan,green,magenta \"npm run dev -w @tankes/shared\" \"npm run dev -w @tankes/server\" \"npm run dev -w @tankes/client\"",
+    "build": "npm run build -w @tankes/shared && npm run build -w @tankes/server && npm run build -w @tankes/client",
+    "typecheck": "npm run build -w @tankes/shared && npm run typecheck -w @tankes/server && npm run typecheck -w @tankes/client",
+    "test": "npm run build -w @tankes/shared && npm run test -w @tankes/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.0",
+    "typescript": "^5.8.2"
+  }
+}

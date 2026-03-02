@@ -1,0 +1,58 @@
+import { type PlayerNetState } from "@tankes/shared";
+import type { InterpolatedWorld } from "./InterpolationBuffer";
+export declare class CanvasRenderer {
+    private readonly canvas;
+    private static readonly MAX_MUZZLE_FLASHES;
+    private static readonly MAX_PARTICLES;
+    private static readonly MAX_TRAILS;
+    private static readonly MAX_RESPAWN_PULSES;
+    private readonly context;
+    private width;
+    private height;
+    private readonly muzzleFlashes;
+    private readonly particles;
+    private readonly bulletTrails;
+    private readonly respawnPulses;
+    private readonly previousBulletPositions;
+    private selfDamageRingLife;
+    private selfKillFlashLife;
+    private roundTransitionLife;
+    private roundTransitionLabel;
+    private lastFrameTime;
+    constructor(canvas: HTMLCanvasElement);
+    resize(): void;
+    getCameraCenter(selfPlayer: PlayerNetState | undefined): {
+        x: number;
+        y: number;
+    };
+    render(world: InterpolatedWorld, selfId: string | null): void;
+    triggerShotEffect(x: number, y: number, rotation: number): void;
+    triggerHitEffect(x: number, y: number, selfHit: boolean): void;
+    triggerDeathEffect(x: number, y: number, selfDeath: boolean): void;
+    triggerRespawnEffect(x: number, y: number): void;
+    triggerKillFlash(): void;
+    triggerRoundTransition(kind: "ended" | "reset"): void;
+    screenToWorld(screenX: number, screenY: number, world: InterpolatedWorld, selfId: string | null): {
+        x: number;
+        y: number;
+    };
+    private drawGrid;
+    private drawWorldBounds;
+    private drawShapes;
+    private drawControlZones;
+    private drawZoneGuide;
+    private drawPowerUps;
+    private getPowerUpPalette;
+    private getShapePalette;
+    private pathRegularPolygon;
+    private captureBulletTrails;
+    private drawBulletTrails;
+    private drawParticles;
+    private drawRespawnPulses;
+    private drawMuzzleFlashes;
+    private drawScreenEffects;
+    private stepEffects;
+    private pruneByLife;
+    private trim;
+    private hexToRgba;
+}
