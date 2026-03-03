@@ -212,7 +212,7 @@ export class StatsHud {
         this.respawnOverlay.textContent = `Respawn in ${remaining}s`;
         this.respawnOverlay.classList.remove("hidden");
     }
-    update(selfPlayer, session, serverTime, selfId) {
+    update(selfPlayer, session, serverTime, selfId, _pingMs) {
         if (!session) {
             this.phaseText.textContent = "Round: --";
             this.objectiveText.textContent = "Objective: --";

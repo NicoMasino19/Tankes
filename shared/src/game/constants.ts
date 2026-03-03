@@ -28,7 +28,7 @@ export const CONTROL_ZONE_BASE_CONFIG: ControlZoneConfig = {
 	captureBonusXp: 34
 };
 
-export const CONTROL_ZONE_CAPTURE_RATE_PER_SECOND = 0.26;
+export const CONTROL_ZONE_CAPTURE_RATE_PER_SECOND = 0.13;
 export const CONTROL_ZONE_MAX_ACTIVE = 1;
 export const CONTROL_ZONE_SPAWN_INTERVAL_MS = 8_000;
 export const CONTROL_ZONE_SPAWN_ATTEMPTS = 50;
@@ -52,3 +52,6 @@ export const BUFF_MAX_STACKS = 4;
 export const BUFF_DAMAGE_PER_STACK = 0.12;
 export const BUFF_RELOAD_PER_STACK = 0.1;
 export const BUFF_MOVEMENT_PER_STACK = 0.1;
+
+export const NET_PING_PROBE_INTERVAL_MS = 1_000;
+export const NET_PING_SMOOTHING_ALPHA = 0.18;

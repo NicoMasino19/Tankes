@@ -1,10 +1,14 @@
 import {
   createNetworkCodec,
+  NET_PING_PROBE_INTERVAL_MS,
+  NET_PING_SMOOTHING_ALPHA,
   NetworkCodecMode,
   SocketEvents,
   type InputState,
   type JoinAckPayload,
   type JoinPayload,
+  type PingAckPayload,
+  type PingProbePayload,
   type RoundEndedPayload,
   type RoundResetPayload,
   type UpgradeStatPayload,
@@ -27,6 +31,8 @@ export class ClientSocket {
   private socket: Socket | null = null;
   private fallbackTried = false;
   private readonly resumeTokenKey = "tankes:resume-token";
+  private pingProbeTimerId: number | null = null;
+  private smoothedPingMs: number | null = null;
 
   constructor(private readonly options: ClientSocketOptions) {}
 
@@ -53,6 +59,7 @@ export class ClientSocket {
       const resumeToken = window.localStorage.getItem(this.resumeTokenKey) ?? undefined;
       const payload: JoinPayload = resumeToken ? { nickname, resumeToken } : { nickname };
       socket.emit(SocketEvents.Join, payload);
+      this.startPingProbeLoop(socket);
     });
 
     socket.on("connect_error", (error) => {
@@ -65,6 +72,7 @@ export class ClientSocket {
       const fallbackUrl = new URL(primaryUrl.toString());
       fallbackUrl.hostname = "127.0.0.1";
       this.fallbackTried = true;
+      this.stopPingProbeLoop();
 
       socket.removeAllListeners();
       socket.close();
@@ -73,6 +81,7 @@ export class ClientSocket {
 
     socket.on("disconnect", (reason) => {
       console.warn("[socket] disconnect", reason);
+      this.stopPingProbeLoop();
     });
 
     socket.on(SocketEvents.JoinAck, (payload: JoinAckPayload) => {
@@ -95,7 +104,57 @@ export class ClientSocket {
       this.options.onRoundReset?.(payload);
     });
 
+    socket.on(SocketEvents.PingAck, (payload: PingAckPayload) => {
+      const roundTripMs = Date.now() - payload.clientSentAtMs;
+      if (!Number.isFinite(roundTripMs) || roundTripMs < 0 || roundTripMs > 60_000) {
+        return;
+      }
+
+      if (this.smoothedPingMs === null) {
+        this.smoothedPingMs = roundTripMs;
+        return;
+      }
+
+      this.smoothedPingMs =
+        this.smoothedPingMs + (roundTripMs - this.smoothedPingMs) * NET_PING_SMOOTHING_ALPHA;
+    });
+
     return socket;
+  }
+
+  private startPingProbeLoop(socket: Socket): void {
+    this.stopPingProbeLoop();
+
+    const sendPingProbe = () => {
+      if (!socket.connected || document.visibilityState === "hidden") {
+        return;
+      }
+
+      const pingProbe: PingProbePayload = {
+        clientSentAtMs: Date.now()
+      };
+      socket.emit(SocketEvents.Ping, pingProbe);
+    };
+
+    sendPingProbe();
+    this.pingProbeTimerId = window.setInterval(sendPingProbe, NET_PING_PROBE_INTERVAL_MS);
+  }
+
+  private stopPingProbeLoop(): void {
+    if (this.pingProbeTimerId !== null) {
+      window.clearInterval(this.pingProbeTimerId);
+      this.pingProbeTimerId = null;
+    }
+
+    this.smoothedPingMs = null;
+  }
+
+  getPingMs(): number | null {
+    if (this.smoothedPingMs === null) {
+      return null;
+    }
+
+    return Math.max(0, Math.round(this.smoothedPingMs));
   }
 
   sendInput(input: InputState): void {

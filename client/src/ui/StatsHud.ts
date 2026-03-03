@@ -319,7 +319,8 @@ export class StatsHud {
     selfPlayer: PlayerNetState | undefined,
     session: MatchState | null,
     serverTime: number,
-    selfId: string | null
+    selfId: string | null,
+    _pingMs?: number | null
   ): void {
     if (!session) {
       this.phaseText.textContent = "Round: --";

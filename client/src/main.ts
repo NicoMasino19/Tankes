@@ -27,6 +27,28 @@ const interpolation = new InterpolationBuffer();
 const gameplayEvents = new GameplayEventDetector();
 const sfx = new SfxManager();
 
+const REMOTE_AUDIO_NEAR_DISTANCE = 180;
+const REMOTE_AUDIO_FAR_DISTANCE = 1100;
+const REMOTE_AUDIO_SMOOTHING = 0.22;
+const remoteAudioMixByPlayerId = new Map<string, number>();
+
+const smoothstep = (edge0: number, edge1: number, value: number): number => {
+  const t = Math.max(0, Math.min(1, (value - edge0) / Math.max(1, edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+};
+
+const computeDistanceVolume = (distance: number): number => {
+  if (distance <= REMOTE_AUDIO_NEAR_DISTANCE) {
+    return 1;
+  }
+  if (distance >= REMOTE_AUDIO_FAR_DISTANCE) {
+    return 0;
+  }
+
+  const fade = smoothstep(REMOTE_AUDIO_NEAR_DISTANCE, REMOTE_AUDIO_FAR_DISTANCE, distance);
+  return 1 - fade;
+};
+
 let selfId: string | null = null;
 let joined = false;
 let latestInterpolated = interpolation.getInterpolated();
@@ -65,16 +87,44 @@ const socketClient = new ClientSocket({
     const events = gameplayEvents.consume(state);
     const selfPlayerSnapshot = selfId ? state.players.get(selfId) : undefined;
 
+    if (!selfPlayerSnapshot || !selfId) {
+      remoteAudioMixByPlayerId.clear();
+    } else {
+      const seenRemoteIds = new Set<string>();
+      for (const [playerId, player] of state.players) {
+        if (playerId === selfId) {
+          continue;
+        }
+
+        seenRemoteIds.add(playerId);
+        const distance = Math.hypot(player.x - selfPlayerSnapshot.x, player.y - selfPlayerSnapshot.y);
+        const target = computeDistanceVolume(distance);
+        const previous = remoteAudioMixByPlayerId.get(playerId) ?? target;
+        const next = previous + (target - previous) * REMOTE_AUDIO_SMOOTHING;
+        remoteAudioMixByPlayerId.set(playerId, next);
+      }
+
+      for (const playerId of [...remoteAudioMixByPlayerId.keys()]) {
+        if (!seenRemoteIds.has(playerId)) {
+          remoteAudioMixByPlayerId.delete(playerId);
+        }
+      }
+    }
+
+    const getRemoteVolumeScale = (eventPlayerId: string | undefined): number => {
+      if (!eventPlayerId || eventPlayerId === selfId) {
+        return 1;
+      }
+
+      return remoteAudioMixByPlayerId.get(eventPlayerId) ?? 0;
+    };
+
     for (const event of events) {
       if (event.type === GameplayEventType.Shot) {
-        let volumeScale = 1;
         const selfShot = event.playerId === selfId;
-        if (!selfShot && selfPlayerSnapshot && event.x !== undefined && event.y !== undefined) {
-          const distance = Math.hypot(event.x - selfPlayerSnapshot.x, event.y - selfPlayerSnapshot.y);
-          const nearDistance = 220;
-          const farDistance = 2600;
-          const normalized = Math.max(0, Math.min(1, (distance - nearDistance) / (farDistance - nearDistance)));
-          volumeScale = 1 - normalized;
+        const volumeScale = getRemoteVolumeScale(event.playerId);
+        if (!selfShot && volumeScale <= 0.01) {
+          continue;
         }
 
         sfx.playShot(selfShot, volumeScale);
@@ -85,23 +135,41 @@ const socketClient = new ClientSocket({
       }
 
       if (event.type === GameplayEventType.Damage) {
-        sfx.playHit(event.playerId === selfId);
+        const selfDamage = event.playerId === selfId;
+        const volumeScale = getRemoteVolumeScale(event.playerId);
+        if (!selfDamage && volumeScale <= 0.01) {
+          continue;
+        }
+
+        sfx.playHit(selfDamage, volumeScale);
         if (event.x !== undefined && event.y !== undefined) {
-          renderer.triggerHitEffect(event.x, event.y, event.playerId === selfId);
+          renderer.triggerHitEffect(event.x, event.y, selfDamage);
         }
         continue;
       }
 
       if (event.type === GameplayEventType.Death) {
-        sfx.playDeath(event.playerId === selfId);
+        const selfDeath = event.playerId === selfId;
+        const volumeScale = getRemoteVolumeScale(event.playerId);
+        if (!selfDeath && volumeScale <= 0.01) {
+          continue;
+        }
+
+        sfx.playDeath(selfDeath, volumeScale);
         if (event.x !== undefined && event.y !== undefined) {
-          renderer.triggerDeathEffect(event.x, event.y, event.playerId === selfId);
+          renderer.triggerDeathEffect(event.x, event.y, selfDeath);
         }
         continue;
       }
 
       if (event.type === GameplayEventType.Respawn) {
-        sfx.playRespawn(event.playerId === selfId);
+        const selfRespawn = event.playerId === selfId;
+        const volumeScale = getRemoteVolumeScale(event.playerId);
+        if (!selfRespawn && volumeScale <= 0.01) {
+          continue;
+        }
+
+        sfx.playRespawn(selfRespawn, volumeScale);
         if (event.x !== undefined && event.y !== undefined) {
           renderer.triggerRespawnEffect(event.x, event.y);
         }
@@ -114,7 +182,13 @@ const socketClient = new ClientSocket({
       }
 
       if (event.type === GameplayEventType.ZoneCapturing) {
-        sfx.playZoneCapturing(event.playerId === selfId, event.amount ?? 0);
+        const selfCapturing = event.playerId === selfId;
+        const volumeScale = getRemoteVolumeScale(event.playerId);
+        if (!selfCapturing && volumeScale <= 0.01) {
+          continue;
+        }
+
+        sfx.playZoneCapturing(selfCapturing, event.amount ?? 0, volumeScale);
         continue;
       }
 
@@ -124,7 +198,13 @@ const socketClient = new ClientSocket({
       }
 
       if (event.type === GameplayEventType.ZoneCaptured) {
-        sfx.playZoneCaptured(event.playerId === selfId);
+        const selfCaptured = event.playerId === selfId;
+        const volumeScale = getRemoteVolumeScale(event.playerId);
+        if (!selfCaptured && volumeScale <= 0.01) {
+          continue;
+        }
+
+        sfx.playZoneCaptured(selfCaptured, volumeScale);
       }
     }
     interpolation.push(state);
@@ -166,7 +246,8 @@ const loop = (now: number): void => {
     selfPlayer as PlayerNetState | undefined,
     latestInterpolated.session,
     latestInterpolated.serverTime,
-    selfId
+    selfId,
+    socketClient.getPingMs()
   );
 
   while (accumulator >= 1 / 30) {

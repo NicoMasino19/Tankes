@@ -39,6 +39,6 @@ export declare class StatsHud {
     private updateTimer;
     private updateResultOverlay;
     private updateRespawnOverlay;
-    update(selfPlayer: PlayerNetState | undefined, session: MatchState | null, serverTime: number, selfId: string | null): void;
+    update(selfPlayer: PlayerNetState | undefined, session: MatchState | null, serverTime: number, selfId: string | null, _pingMs?: number | null): void;
 }
 export {};

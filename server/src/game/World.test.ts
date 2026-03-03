@@ -295,7 +295,7 @@ describe("World", () => {
     player.input.aimX = player.x + 50;
     player.input.aimY = player.y;
 
-    for (let step = 2; step <= 8; step += 1) {
+    for (let step = 2; step <= 11; step += 1) {
       world.step(1, step, step * 1000 + 10_000);
     }
 

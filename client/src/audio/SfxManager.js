@@ -45,7 +45,10 @@ export class SfxManager {
         });
     }
     playShot(selfShot, volumeScale = 1) {
-        const distanceScale = Math.max(0.04, Math.min(1, volumeScale));
+        const distanceScale = Math.max(0, Math.min(1, volumeScale));
+        if (!selfShot && distanceScale <= 0.01) {
+            return;
+        }
         this.playTone({
             key: selfShot ? "shot:self" : "shot:other",
             minIntervalMs: selfShot ? 30 : 70,
@@ -56,36 +59,48 @@ export class SfxManager {
             wave: selfShot ? "triangle" : "sine"
         });
     }
-    playHit(selfHit) {
+    playHit(selfHit, volumeScale = 1) {
+        const distanceScale = Math.max(0, Math.min(1, volumeScale));
+        if (!selfHit && distanceScale <= 0.01) {
+            return;
+        }
         this.playTone({
             key: selfHit ? "hit:self" : "hit:other",
             minIntervalMs: 80,
             frequency: selfHit ? 240 : 320,
             endFrequency: selfHit ? 180 : 260,
             duration: 0.08,
-            gain: selfHit ? 0.2 : 0.1,
+            gain: (selfHit ? 0.2 : 0.1) * distanceScale,
             wave: "triangle"
         });
     }
-    playDeath(selfDeath) {
+    playDeath(selfDeath, volumeScale = 1) {
+        const distanceScale = Math.max(0, Math.min(1, volumeScale));
+        if (!selfDeath && distanceScale <= 0.01) {
+            return;
+        }
         this.playTone({
             key: selfDeath ? "death:self" : "death:other",
             minIntervalMs: 220,
             frequency: selfDeath ? 200 : 250,
             endFrequency: 90,
             duration: selfDeath ? 0.2 : 0.14,
-            gain: selfDeath ? 0.26 : 0.16,
+            gain: (selfDeath ? 0.26 : 0.16) * distanceScale,
             wave: "sawtooth"
         });
     }
-    playRespawn(selfRespawn) {
+    playRespawn(selfRespawn, volumeScale = 1) {
+        const distanceScale = Math.max(0, Math.min(1, volumeScale));
+        if (!selfRespawn && distanceScale <= 0.01) {
+            return;
+        }
         this.playTone({
             key: selfRespawn ? "respawn:self" : "respawn:other",
             minIntervalMs: 220,
             frequency: selfRespawn ? 330 : 300,
             endFrequency: selfRespawn ? 520 : 430,
             duration: 0.16,
-            gain: selfRespawn ? 0.18 : 0.1,
+            gain: (selfRespawn ? 0.18 : 0.1) * distanceScale,
             wave: "sine"
         });
     }
@@ -111,7 +126,11 @@ export class SfxManager {
             wave: "triangle"
         });
     }
-    playZoneCapturing(selfCapturing, captureProgress = 0) {
+    playZoneCapturing(selfCapturing, captureProgress = 0, volumeScale = 1) {
+        const distanceScale = Math.max(0, Math.min(1, volumeScale));
+        if (!selfCapturing && distanceScale <= 0.01) {
+            return;
+        }
         const progress = Math.max(0, Math.min(1, captureProgress));
         const key = selfCapturing ? "zone:capturing:self" : "zone:capturing:other";
         const minIntervalMs = selfCapturing ? 180 : 260;
@@ -124,7 +143,7 @@ export class SfxManager {
             return;
         }
         const now = context.currentTime;
-        const baseGain = (selfCapturing ? 0.16 : 0.1) * this.settings.volume;
+        const baseGain = (selfCapturing ? 0.16 : 0.1) * this.settings.volume * distanceScale;
         const lowStart = selfCapturing ? 250 : 220;
         const lowEnd = selfCapturing ? 430 : 360;
         const highStart = selfCapturing ? 330 : 280;
@@ -164,14 +183,18 @@ export class SfxManager {
             wave: "square"
         });
     }
-    playZoneCaptured(selfCaptured) {
+    playZoneCaptured(selfCaptured, volumeScale = 1) {
+        const distanceScale = Math.max(0, Math.min(1, volumeScale));
+        if (!selfCaptured && distanceScale <= 0.01) {
+            return;
+        }
         this.playTone({
             key: selfCaptured ? "zone:captured:self" : "zone:captured:other",
             minIntervalMs: 360,
             frequency: selfCaptured ? 300 : 240,
             endFrequency: selfCaptured ? 520 : 360,
             duration: 0.17,
-            gain: selfCaptured ? 0.24 : 0.16,
+            gain: (selfCaptured ? 0.24 : 0.16) * distanceScale,
             wave: "sine"
         });
     }
