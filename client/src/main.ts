@@ -1,4 +1,4 @@
-import { type PlayerNetState } from "@tankes/shared";
+import { SERVER_TICK_RATE, type PlayerNetState } from "@tankes/shared";
 import "./index.css";
 import { SfxManager } from "./audio/SfxManager";
 import { InputController } from "./input/InputController";
@@ -30,6 +30,7 @@ const sfx = new SfxManager();
 const REMOTE_AUDIO_NEAR_DISTANCE = 180;
 const REMOTE_AUDIO_FAR_DISTANCE = 1100;
 const REMOTE_AUDIO_SMOOTHING = 0.22;
+const INPUT_SEND_RATE = SERVER_TICK_RATE;
 const remoteAudioMixByPlayerId = new Map<string, number>();
 
 const smoothstep = (edge0: number, edge1: number, value: number): number => {
@@ -51,7 +52,7 @@ const computeDistanceVolume = (distance: number): number => {
 
 let selfId: string | null = null;
 let joined = false;
-let latestInterpolated = interpolation.getInterpolated();
+let latestInterpolated = interpolation.getInterpolated(selfId);
 
 const statsHud = new StatsHud(
   (stat) => {
@@ -238,7 +239,7 @@ const loop = (now: number): void => {
   lastFrame = now;
   accumulator += deltaSeconds;
 
-  latestInterpolated = interpolation.getInterpolated();
+  latestInterpolated = interpolation.getInterpolated(selfId);
   renderer.render(latestInterpolated, selfId);
 
   const selfPlayer = latestInterpolated.players.find((player) => player.id === selfId);
@@ -250,14 +251,14 @@ const loop = (now: number): void => {
     socketClient.getPingMs()
   );
 
-  while (accumulator >= 1 / 30) {
+  while (accumulator >= 1 / INPUT_SEND_RATE) {
     const mouse = input.getMouseScreenPosition();
     const worldMouse = renderer.screenToWorld(mouse.x, mouse.y, latestInterpolated, selfId);
     const allowInput = !latestInterpolated.session || latestInterpolated.session.phase === "in_progress";
     if (joined && selfId && allowInput) {
       socketClient.sendInput(input.buildInput(worldMouse.x, worldMouse.y));
     }
-    accumulator -= 1 / 30;
+    accumulator -= 1 / INPUT_SEND_RATE;
   }
 
   requestAnimationFrame(loop);

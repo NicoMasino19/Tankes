@@ -12,7 +12,7 @@ export const BASE_BULLET_DAMAGE = 18;
 export const BASE_RELOAD_MS = 320;
 export const BASE_MAX_HEALTH = 120;
 export const STAT_MAX_LEVEL = 10;
-export const INTERPOLATION_DELAY_MS = 100;
+export const INTERPOLATION_DELAY_MS = 67;
 export const GRID_CELL_SIZE = 200;
 export const RESPAWN_INVULNERABILITY_MS = 1400;
 

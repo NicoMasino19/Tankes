@@ -16,6 +16,7 @@ export declare class StatsHud {
     private readonly phaseText;
     private readonly objectiveText;
     private readonly timerText;
+    private readonly pingText;
     private readonly scoreboardList;
     private readonly levelText;
     private readonly pointsText;
@@ -39,6 +40,6 @@ export declare class StatsHud {
     private updateTimer;
     private updateResultOverlay;
     private updateRespawnOverlay;
-    update(selfPlayer: PlayerNetState | undefined, session: MatchState | null, serverTime: number, selfId: string | null, _pingMs?: number | null): void;
+    update(selfPlayer: PlayerNetState | undefined, session: MatchState | null, serverTime: number, selfId: string | null, pingMs?: number | null): void;
 }
 export {};

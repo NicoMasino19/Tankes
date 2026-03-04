@@ -60,7 +60,7 @@ export class InterpolationBuffer {
     }
   }
 
-  getInterpolated(): InterpolatedWorld {
+  getInterpolated(localPlayerId?: string | null): InterpolatedWorld {
     const firstEntry = this.history[0];
     if (!firstEntry) {
       return { tick: 0, serverTime: 0, session: null, players: [], bullets: [], shapes: [], zones: [], powerUps: [] };
@@ -102,6 +102,10 @@ export class InterpolationBuffer {
 
     const players: PlayerNetState[] = [];
     for (const [id, newPlayer] of newer.state.players) {
+      if (localPlayerId && id === localPlayerId) {
+        players.push(newPlayer);
+        continue;
+      }
       const oldPlayer = older.state.players.get(id);
       if (!oldPlayer) {
         players.push(newPlayer);
