@@ -39,6 +39,7 @@ export class StatsHud {
   private readonly phaseText: HTMLDivElement;
   private readonly objectiveText: HTMLDivElement;
   private readonly timerText: HTMLDivElement;
+  private readonly pingText: HTMLDivElement;
   private readonly scoreboardList: HTMLDivElement;
 
   private readonly levelText: HTMLDivElement;
@@ -119,6 +120,10 @@ export class StatsHud {
     this.timerText = document.createElement("div");
     this.timerText.className = "mt-1 text-slate-400";
 
+    this.pingText = document.createElement("div");
+    this.pingText.className = "mt-1 text-slate-400";
+    this.pingText.textContent = "Ping: -- ms";
+
     const scoreboardTitle = document.createElement("h3");
     scoreboardTitle.className = "mt-3 text-xs font-semibold uppercase tracking-wide text-slate-300";
     scoreboardTitle.textContent = "Top 10";
@@ -195,6 +200,7 @@ export class StatsHud {
       this.phaseText,
       this.objectiveText,
       this.timerText,
+      this.pingText,
       scoreboardTitle,
       this.scoreboardList
     );
@@ -320,8 +326,10 @@ export class StatsHud {
     session: MatchState | null,
     serverTime: number,
     selfId: string | null,
-    _pingMs?: number | null
+    pingMs?: number | null
   ): void {
+    this.pingText.textContent = pingMs === null || pingMs === undefined ? "Ping: -- ms" : `Ping: ${pingMs} ms`;
+
     if (!session) {
       this.phaseText.textContent = "Round: --";
       this.objectiveText.textContent = "Objective: --";

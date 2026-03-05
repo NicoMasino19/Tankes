@@ -15,6 +15,7 @@ export class StatsHud {
     phaseText;
     objectiveText;
     timerText;
+    pingText;
     scoreboardList;
     levelText;
     pointsText;
@@ -77,6 +78,9 @@ export class StatsHud {
         this.objectiveText.className = "mt-1 text-slate-300";
         this.timerText = document.createElement("div");
         this.timerText.className = "mt-1 text-slate-400";
+        this.pingText = document.createElement("div");
+        this.pingText.className = "mt-1 text-slate-400";
+        this.pingText.textContent = "Ping: -- ms";
         const scoreboardTitle = document.createElement("h3");
         scoreboardTitle.className = "mt-3 text-xs font-semibold uppercase tracking-wide text-slate-300";
         scoreboardTitle.textContent = "Top 10";
@@ -130,7 +134,7 @@ export class StatsHud {
         this.respawnOverlay = document.createElement("div");
         this.respawnOverlay.className =
             "pointer-events-none absolute left-1/2 top-1/2 z-20 hidden -translate-x-1/2 -translate-y-1/2 rounded-md border border-cyan-700 bg-slate-950/95 px-4 py-2 text-sm font-semibold text-cyan-200";
-        this.roundPanel.append(title, this.phaseText, this.objectiveText, this.timerText, scoreboardTitle, this.scoreboardList);
+        this.roundPanel.append(title, this.phaseText, this.objectiveText, this.timerText, this.pingText, scoreboardTitle, this.scoreboardList);
         this.statsPanel.append(statsTitle, this.levelText, this.pointsText, audioTitle, audioRow);
         for (const key of STAT_KEYS) {
             const row = document.createElement("button");
@@ -212,7 +216,8 @@ export class StatsHud {
         this.respawnOverlay.textContent = `Respawn in ${remaining}s`;
         this.respawnOverlay.classList.remove("hidden");
     }
-    update(selfPlayer, session, serverTime, selfId, _pingMs) {
+    update(selfPlayer, session, serverTime, selfId, pingMs) {
+        this.pingText.textContent = pingMs === null || pingMs === undefined ? "Ping: -- ms" : `Ping: ${pingMs} ms`;
         if (!session) {
             this.phaseText.textContent = "Round: --";
             this.objectiveText.textContent = "Objective: --";

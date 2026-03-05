@@ -187,6 +187,15 @@ export interface UpgradeStatPayload {
   stat: StatKey;
 }
 
+export interface PingProbePayload {
+  clientSentAtMs: number;
+}
+
+export interface PingAckPayload {
+  clientSentAtMs: number;
+  serverReceivedAtMs: number;
+}
+
 export type RoundEndedPayload = RoundResult;
 
 export interface RoundResetPayload {

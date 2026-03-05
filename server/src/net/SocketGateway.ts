@@ -22,6 +22,8 @@ import {
   SocketEvents,
   type InputState,
   type JoinPayload,
+  type PingAckPayload,
+  type PingProbePayload,
   type StatKey,
   type UpgradeStatPayload,
   type WorldDeltaSnapshot
@@ -259,6 +261,21 @@ const sanitizeUpgradePayload = (payload: unknown): UpgradeStatPayload | null => 
   }
 
   return { stat: statCandidate as StatKey };
+};
+
+const sanitizePingPayload = (payload: unknown): PingProbePayload | null => {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const clientSentAtMs = (payload as Partial<PingProbePayload>).clientSentAtMs;
+  if (!isFiniteNumber(clientSentAtMs) || clientSentAtMs <= 0) {
+    return null;
+  }
+
+  return {
+    clientSentAtMs: Math.trunc(clientSentAtMs)
+  };
 };
 
 export class SocketGateway {
@@ -558,6 +575,20 @@ export class SocketGateway {
       }
 
       this.metrics.acceptedUpgrades += 1;
+    });
+
+    socket.on(SocketEvents.Ping, (payload: unknown) => {
+      const pingProbe = sanitizePingPayload(payload);
+      if (!pingProbe) {
+        this.logRejected(socket.id, SocketEvents.Ping, "invalid_payload");
+        return;
+      }
+
+      const pingAck: PingAckPayload = {
+        clientSentAtMs: pingProbe.clientSentAtMs,
+        serverReceivedAtMs: Date.now()
+      };
+      socket.emit(SocketEvents.PingAck, pingAck);
     });
 
     socket.on("disconnect", () => {
