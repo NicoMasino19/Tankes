@@ -77,6 +77,12 @@ export class ClientSocket {
             this.smoothedPingMs =
                 this.smoothedPingMs + (roundTripMs - this.smoothedPingMs) * NET_PING_SMOOTHING_ALPHA;
         });
+        socket.on(SocketEvents.AbilityOffer, (payload) => {
+            this.options.onAbilityOffer?.(payload);
+        });
+        socket.on(SocketEvents.AbilityCastRejected, (payload) => {
+            this.options.onAbilityCastRejected?.(payload);
+        });
         return socket;
     }
     startPingProbeLoop(socket) {
@@ -111,6 +117,12 @@ export class ClientSocket {
     }
     upgradeStat(payload) {
         this.socket?.emit(SocketEvents.UpgradeStat, payload);
+    }
+    chooseAbility(payload) {
+        this.socket?.emit(SocketEvents.ChooseAbility, payload);
+    }
+    castAbility(slot) {
+        this.socket?.emit(SocketEvents.CastAbility, { slot });
     }
 }
 //# sourceMappingURL=ClientSocket.js.map

@@ -1,10 +1,20 @@
-import { BuffType, PLAYER_RADIUS, ShapeKind, WORLD_HEIGHT, WORLD_WIDTH } from "@tankes/shared";
+import { AbilityId, AbilityVfxPhase, BuffType, PLAYER_RADIUS, ShapeKind, WORLD_HEIGHT, WORLD_WIDTH } from "@tankes/shared";
 export class CanvasRenderer {
     canvas;
     static MAX_MUZZLE_FLASHES = 50;
     static MAX_PARTICLES = 240;
     static MAX_TRAILS = 260;
     static MAX_RESPAWN_PULSES = 40;
+    static MAX_DASH_EFFECTS = 40;
+    static MAX_EMP_EFFECTS = 40;
+    static MAX_BURST_EFFECTS = 40;
+    static MAX_MINE_EFFECTS = 50;
+    static MAX_TURRET_PULSES = 60;
+    static MAX_REPAIR_EFFECTS = 40;
+    static MAX_FOG_EFFECTS = 40;
+    static MAX_ORBITAL_EFFECTS = 40;
+    static MAX_HOMING_TRAILS = 30;
+    static MAX_HOMING_IMPACTS = 30;
     context;
     width = 1280;
     height = 720;
@@ -12,6 +22,23 @@ export class CanvasRenderer {
     particles = [];
     bulletTrails = [];
     respawnPulses = [];
+    dashEffects = [];
+    empEffects = [];
+    burstEffects = [];
+    mineEffects = [];
+    mineNodes = new Map();
+    turretPulseEffects = [];
+    repairEffects = [];
+    fogEffects = [];
+    fogZones = new Map();
+    orbitalEffects = [];
+    homingTrailEffects = [];
+    homingImpactEffects = [];
+    shieldAuras = new Map();
+    turretNodes = new Map();
+    overheatAuras = new Map();
+    siegeAuras = new Map();
+    seenAbilityCueExpiryById = new Map();
     previousBulletPositions = new Map();
     selfDamageRingLife = 0;
     selfKillFlashLife = 0;
@@ -45,6 +72,7 @@ export class CanvasRenderer {
         const deltaSeconds = Math.min(0.05, Math.max(0.001, (now - this.lastFrameTime) / 1000));
         this.lastFrameTime = now;
         this.stepEffects(deltaSeconds);
+        this.ingestAbilityVfxCues(world.abilityVfxCues, world.serverTime);
         const self = world.players.find((player) => player.id === selfId);
         const camera = this.getCameraCenter(self);
         const ctx = this.context;
@@ -59,6 +87,14 @@ export class CanvasRenderer {
         this.captureBulletTrails(world);
         this.drawBulletTrails(camera);
         this.drawRespawnPulses(camera);
+        this.drawFogEffects(camera, world.serverTime);
+        this.drawEmpEffects(camera, world.serverTime);
+        this.drawOrbitalEffects(camera, world.serverTime);
+        this.drawRepairEffects(camera);
+        this.drawMineEffects(camera, world.serverTime);
+        this.drawTurretNodes(camera, world.serverTime);
+        this.drawTurretPulseEffects(camera);
+        this.drawHomingImpactEffects(camera);
         this.drawParticles(camera);
         for (const bullet of world.bullets) {
             const sx = bullet.x - camera.x + this.width / 2;
@@ -91,6 +127,9 @@ export class CanvasRenderer {
             ctx.fillStyle = "#e2e8f0";
             ctx.fillRect(0, -4, PLAYER_RADIUS + 16, 8);
             ctx.restore();
+            this.drawShieldAura(player, camera, world.serverTime);
+            this.drawOverheatAura(player, camera, world.serverTime);
+            this.drawSiegeAura(player, camera, world.serverTime);
             const hpRatio = Math.max(0, Math.min(1, player.hp / player.maxHp));
             ctx.fillStyle = "#1e293b";
             ctx.fillRect(sx - 26, sy + 30, 52, 6);
@@ -102,7 +141,323 @@ export class CanvasRenderer {
             ctx.fillText(player.name, sx, sy - 34);
         }
         this.drawMuzzleFlashes(camera);
+        this.drawDashEffects(camera);
+        this.drawBurstEffects(camera);
+        this.drawHomingTrailEffects(camera);
         this.drawScreenEffects();
+    }
+    ingestAbilityVfxCues(cues, serverTime) {
+        for (const [cueId, expiresAtMs] of this.seenAbilityCueExpiryById.entries()) {
+            if (expiresAtMs <= serverTime) {
+                this.seenAbilityCueExpiryById.delete(cueId);
+            }
+        }
+        for (const [playerId, node] of this.turretNodes.entries()) {
+            if (node.expiresAtMs <= serverTime) {
+                this.turretNodes.delete(playerId);
+            }
+        }
+        for (const [playerId, node] of this.mineNodes.entries()) {
+            if (node.expiresAtMs <= serverTime) {
+                this.mineNodes.delete(playerId);
+            }
+        }
+        for (const [playerId, zone] of this.fogZones.entries()) {
+            if (zone.expiresAtMs <= serverTime) {
+                this.fogZones.delete(playerId);
+            }
+        }
+        for (const [playerId, aura] of this.overheatAuras.entries()) {
+            if (aura.penaltyEndsAtMs <= serverTime) {
+                this.overheatAuras.delete(playerId);
+            }
+        }
+        for (const [playerId, aura] of this.siegeAuras.entries()) {
+            if (aura.expiresAtMs <= serverTime) {
+                this.siegeAuras.delete(playerId);
+            }
+        }
+        for (const cue of cues) {
+            if (this.seenAbilityCueExpiryById.has(cue.id)) {
+                continue;
+            }
+            this.seenAbilityCueExpiryById.set(cue.id, cue.createdAtMs + cue.ttlMs + 200);
+            if (cue.abilityId === AbilityId.DashVectorial && cue.phase === AbilityVfxPhase.Cast) {
+                this.dashEffects.push({
+                    x: cue.x,
+                    y: cue.y,
+                    rotation: cue.rotation ?? 0,
+                    life: 0.34,
+                    maxLife: 0.34
+                });
+                this.trim(this.dashEffects, CanvasRenderer.MAX_DASH_EFFECTS);
+                continue;
+            }
+            if (cue.abilityId === AbilityId.EmpPulse && cue.phase === AbilityVfxPhase.Pulse) {
+                this.empEffects.push({
+                    x: cue.x,
+                    y: cue.y,
+                    radius: (cue.radius ?? 200) * 1.2,
+                    life: 0.54,
+                    maxLife: 0.54
+                });
+                this.trim(this.empEffects, CanvasRenderer.MAX_EMP_EFFECTS);
+                continue;
+            }
+            if (cue.abilityId === AbilityId.ReactiveShield) {
+                if (cue.phase === AbilityVfxPhase.Cast) {
+                    this.shieldAuras.set(cue.casterPlayerId, {
+                        playerId: cue.casterPlayerId,
+                        expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 1_500),
+                        radius: cue.radius ?? PLAYER_RADIUS + 10
+                    });
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Expire) {
+                    this.shieldAuras.delete(cue.casterPlayerId);
+                }
+            }
+            if (cue.abilityId === AbilityId.PiercingBurst && cue.phase === AbilityVfxPhase.Cast) {
+                this.burstEffects.push({
+                    x: cue.x,
+                    y: cue.y,
+                    rotation: cue.rotation ?? 0,
+                    radius: (cue.radius ?? 140) * 1.35,
+                    life: 0.3,
+                    maxLife: 0.3
+                });
+                this.trim(this.burstEffects, CanvasRenderer.MAX_BURST_EFFECTS);
+                continue;
+            }
+            if (cue.abilityId === AbilityId.ProximityMine) {
+                if (cue.phase === AbilityVfxPhase.Cast) {
+                    this.mineNodes.set(cue.casterPlayerId, {
+                        playerId: cue.casterPlayerId,
+                        x: cue.x,
+                        y: cue.y,
+                        createdAtMs: cue.createdAtMs,
+                        expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 10_000),
+                        radius: cue.radius ?? 180
+                    });
+                    this.mineEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: (cue.radius ?? 180) * 0.52,
+                        life: 0.34,
+                        maxLife: 0.34,
+                        color: "#f97316",
+                        fillAlpha: 0.24,
+                        strokeAlpha: 0.95
+                    });
+                    this.trim(this.mineEffects, CanvasRenderer.MAX_MINE_EFFECTS);
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Impact) {
+                    this.mineNodes.delete(cue.casterPlayerId);
+                    this.mineEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: (cue.radius ?? 180) * 1.36,
+                        life: 0.58,
+                        maxLife: 0.58,
+                        color: "#fb7185",
+                        fillAlpha: 0.56,
+                        strokeAlpha: 1
+                    });
+                    this.trim(this.mineEffects, CanvasRenderer.MAX_MINE_EFFECTS);
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Expire) {
+                    this.mineNodes.delete(cue.casterPlayerId);
+                    this.mineEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: (cue.radius ?? 180) * 0.5,
+                        life: 0.22,
+                        maxLife: 0.22,
+                        color: "#f59e0b",
+                        fillAlpha: 0.14,
+                        strokeAlpha: 0.6
+                    });
+                    this.trim(this.mineEffects, CanvasRenderer.MAX_MINE_EFFECTS);
+                    continue;
+                }
+            }
+            if (cue.abilityId === AbilityId.LightTurret) {
+                if (cue.phase === AbilityVfxPhase.Cast) {
+                    this.turretNodes.set(cue.casterPlayerId, {
+                        playerId: cue.casterPlayerId,
+                        x: cue.x,
+                        y: cue.y,
+                        expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 6_000),
+                        radius: cue.radius ?? 24
+                    });
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Pulse) {
+                    this.turretPulseEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        rotation: cue.rotation ?? 0,
+                        length: (cue.radius ?? 80) * 1.15,
+                        life: 0.2,
+                        maxLife: 0.2
+                    });
+                    this.trim(this.turretPulseEffects, CanvasRenderer.MAX_TURRET_PULSES);
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Expire) {
+                    this.turretNodes.delete(cue.casterPlayerId);
+                    this.mineEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: cue.radius ?? 24,
+                        life: 0.2,
+                        maxLife: 0.2,
+                        color: "#22d3ee",
+                        fillAlpha: 0.2,
+                        strokeAlpha: 0.85
+                    });
+                    this.trim(this.mineEffects, CanvasRenderer.MAX_MINE_EFFECTS);
+                }
+            }
+            if (cue.abilityId === AbilityId.TankRepair && cue.phase === AbilityVfxPhase.Cast) {
+                this.repairEffects.push({
+                    x: cue.x,
+                    y: cue.y,
+                    radius: (cue.radius ?? PLAYER_RADIUS + 16) * 1.3,
+                    life: 0.46,
+                    maxLife: 0.46
+                });
+                this.trim(this.repairEffects, CanvasRenderer.MAX_REPAIR_EFFECTS);
+                continue;
+            }
+            if (cue.abilityId === AbilityId.TacticalFog) {
+                if (cue.phase === AbilityVfxPhase.Cast) {
+                    this.fogZones.set(cue.casterPlayerId, {
+                        playerId: cue.casterPlayerId,
+                        x: cue.x,
+                        y: cue.y,
+                        expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 6_500),
+                        radius: (cue.radius ?? 380) * 1.08
+                    });
+                    this.fogEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: (cue.radius ?? 380) * 1.2,
+                        life: 0.9,
+                        maxLife: 0.9
+                    });
+                    this.trim(this.fogEffects, CanvasRenderer.MAX_FOG_EFFECTS);
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Pulse) {
+                    this.fogEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: (cue.radius ?? 380) * 1.28,
+                        life: 1.1,
+                        maxLife: 1.1
+                    });
+                    this.trim(this.fogEffects, CanvasRenderer.MAX_FOG_EFFECTS);
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Expire) {
+                    this.fogZones.delete(cue.casterPlayerId);
+                    this.fogEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: (cue.radius ?? 380) * 1.04,
+                        life: 0.45,
+                        maxLife: 0.45
+                    });
+                    this.trim(this.fogEffects, CanvasRenderer.MAX_FOG_EFFECTS);
+                    continue;
+                }
+            }
+            if (cue.abilityId === AbilityId.Overheat) {
+                if (cue.phase === AbilityVfxPhase.Cast) {
+                    const overheatEndsAtMs = cue.createdAtMs + (cue.durationMs ?? 4_000);
+                    this.overheatAuras.set(cue.casterPlayerId, {
+                        playerId: cue.casterPlayerId,
+                        overheatEndsAtMs,
+                        penaltyEndsAtMs: overheatEndsAtMs,
+                        radius: cue.radius ?? PLAYER_RADIUS + 16
+                    });
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Expire) {
+                    const previous = this.overheatAuras.get(cue.casterPlayerId);
+                    this.overheatAuras.set(cue.casterPlayerId, {
+                        playerId: cue.casterPlayerId,
+                        overheatEndsAtMs: cue.createdAtMs,
+                        penaltyEndsAtMs: cue.createdAtMs + (cue.durationMs ?? 1_000),
+                        radius: cue.radius ?? previous?.radius ?? PLAYER_RADIUS + 16
+                    });
+                }
+            }
+            if (cue.abilityId === AbilityId.OrbitalBarrage) {
+                if (cue.phase === AbilityVfxPhase.Cast) {
+                    this.orbitalEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: (cue.radius ?? 180) * 0.9,
+                        life: 0.28,
+                        maxLife: 0.28
+                    });
+                    this.trim(this.orbitalEffects, CanvasRenderer.MAX_ORBITAL_EFFECTS);
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Pulse) {
+                    this.orbitalEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: (cue.radius ?? 180) * 1.25,
+                        life: 0.56,
+                        maxLife: 0.56
+                    });
+                    this.trim(this.orbitalEffects, CanvasRenderer.MAX_ORBITAL_EFFECTS);
+                    continue;
+                }
+            }
+            if (cue.abilityId === AbilityId.SiegeMode) {
+                if (cue.phase === AbilityVfxPhase.Cast) {
+                    this.siegeAuras.set(cue.casterPlayerId, {
+                        playerId: cue.casterPlayerId,
+                        expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 5_000),
+                        radius: cue.radius ?? PLAYER_RADIUS + 22
+                    });
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Expire) {
+                    this.siegeAuras.delete(cue.casterPlayerId);
+                }
+            }
+            if (cue.abilityId === AbilityId.HomingMissile) {
+                if (cue.phase === AbilityVfxPhase.Cast) {
+                    this.homingTrailEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        rotation: cue.rotation ?? 0,
+                        length: (cue.radius ?? 180) * 1.25,
+                        life: 0.24,
+                        maxLife: 0.24
+                    });
+                    this.trim(this.homingTrailEffects, CanvasRenderer.MAX_HOMING_TRAILS);
+                    continue;
+                }
+                if (cue.phase === AbilityVfxPhase.Impact) {
+                    this.homingImpactEffects.push({
+                        x: cue.x,
+                        y: cue.y,
+                        radius: (cue.radius ?? 130) * 1.3,
+                        life: 0.48,
+                        maxLife: 0.48
+                    });
+                    this.trim(this.homingImpactEffects, CanvasRenderer.MAX_HOMING_IMPACTS);
+                }
+            }
+        }
     }
     triggerShotEffect(x, y, rotation) {
         this.muzzleFlashes.push({ x, y, rotation, life: 0.1, maxLife: 0.1 });
@@ -440,6 +795,427 @@ export class CanvasRenderer {
             ctx.stroke();
         }
     }
+    drawDashEffects(camera) {
+        const ctx = this.context;
+        for (const effect of this.dashEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.rotate(effect.rotation);
+            ctx.strokeStyle = `rgba(34, 211, 238, ${alpha * 0.8})`;
+            ctx.lineWidth = 7;
+            ctx.beginPath();
+            ctx.moveTo(-92, 0);
+            ctx.lineTo(24, 0);
+            ctx.stroke();
+            ctx.strokeStyle = `rgba(125, 211, 252, ${alpha * 0.55})`;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(-84, -12);
+            ctx.lineTo(12, -12);
+            ctx.moveTo(-84, 12);
+            ctx.lineTo(12, 12);
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+    drawEmpEffects(camera, serverTime) {
+        const ctx = this.context;
+        for (const effect of this.empEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const progress = 1 - alpha;
+            const radius = effect.radius * (0.34 + progress * 1.08);
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(59, 130, 246, ${alpha * 0.26})`;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(56, 189, 248, ${alpha * 0.9})`;
+            ctx.lineWidth = 4.5;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.stroke();
+            const pulseAngle = (serverTime / 260) % (Math.PI * 2);
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(147, 197, 253, ${alpha * 0.8})`;
+            ctx.lineWidth = 2.8;
+            ctx.arc(sx, sy, radius * 0.65, pulseAngle, pulseAngle + Math.PI * 1.2);
+            ctx.stroke();
+        }
+    }
+    drawRepairEffects(camera) {
+        const ctx = this.context;
+        for (const effect of this.repairEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const progress = 1 - alpha;
+            const radius = effect.radius * (0.5 + progress * 1.25);
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(34, 197, 94, ${alpha * 0.28})`;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(74, 222, 128, ${alpha * 0.95})`;
+            ctx.lineWidth = 3.4;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+    }
+    drawFogEffects(camera, serverTime) {
+        const ctx = this.context;
+        for (const [playerId, zone] of this.fogZones.entries()) {
+            if (zone.expiresAtMs <= serverTime) {
+                this.fogZones.delete(playerId);
+                continue;
+            }
+            const remaining = Math.max(0, zone.expiresAtMs - serverTime);
+            const alpha = Math.max(0.24, Math.min(1, remaining / 6_500));
+            const pulse = 0.96 + Math.sin((serverTime + zone.x * 0.3 + zone.y * 0.2) / 220) * 0.05;
+            const sx = zone.x - camera.x + this.width / 2;
+            const sy = zone.y - camera.y + this.height / 2;
+            const radius = zone.radius * pulse;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(71, 85, 105, ${alpha * 0.3})`;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(148, 163, 184, ${alpha * 0.17})`;
+            ctx.arc(sx - radius * 0.12, sy - radius * 0.08, radius * 0.72, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(94, 234, 212, ${alpha * 0.08})`;
+            ctx.arc(sx + radius * 0.18, sy + radius * 0.1, radius * 0.52, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.setLineDash([14, 10]);
+            ctx.strokeStyle = `rgba(103, 232, 249, ${alpha * 0.8})`;
+            ctx.lineWidth = 4.2;
+            ctx.arc(sx, sy, radius * 0.94, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        for (const effect of this.fogEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const flicker = 0.84 + Math.sin((serverTime + effect.x + effect.y) / 160) * 0.16;
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(148, 163, 184, ${alpha * 0.34 * flicker})`;
+            ctx.arc(sx, sy, effect.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.setLineDash([12, 9]);
+            ctx.strokeStyle = `rgba(125, 211, 252, ${alpha * 0.9})`;
+            ctx.lineWidth = 4.2;
+            ctx.arc(sx, sy, effect.radius * (0.9 + (1 - alpha) * 0.08), 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    }
+    drawOrbitalEffects(camera, serverTime) {
+        const ctx = this.context;
+        for (const effect of this.orbitalEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const progress = 1 - alpha;
+            const radius = effect.radius * (0.38 + progress * 1.15);
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(14, 165, 233, ${alpha * 0.32})`;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(56, 189, 248, ${alpha * 0.95})`;
+            ctx.lineWidth = 3.6;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.stroke();
+            const sweep = (serverTime / 230) % (Math.PI * 2);
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(186, 230, 253, ${alpha * 0.75})`;
+            ctx.lineWidth = 2.4;
+            ctx.arc(sx, sy, radius * 0.72, sweep, sweep + Math.PI * 1.1);
+            ctx.stroke();
+        }
+    }
+    drawBurstEffects(camera) {
+        const ctx = this.context;
+        for (const effect of this.burstEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.rotate(effect.rotation);
+            for (const angleOffset of [-0.12, 0, 0.12]) {
+                ctx.save();
+                ctx.rotate(angleOffset);
+                ctx.strokeStyle = `rgba(250, 204, 21, ${alpha * 0.88})`;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(16, 0);
+                ctx.lineTo(effect.radius, 0);
+                ctx.stroke();
+                ctx.strokeStyle = `rgba(254, 240, 138, ${alpha * 0.55})`;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(22, -5);
+                ctx.lineTo(effect.radius - 10, -5);
+                ctx.moveTo(22, 5);
+                ctx.lineTo(effect.radius - 10, 5);
+                ctx.stroke();
+                ctx.restore();
+            }
+            ctx.restore();
+        }
+    }
+    drawMineEffects(camera, serverTime) {
+        const ctx = this.context;
+        for (const [playerId, node] of this.mineNodes.entries()) {
+            if (node.expiresAtMs <= serverTime) {
+                this.mineNodes.delete(playerId);
+                continue;
+            }
+            const armedProgress = Math.max(0, Math.min(1, (serverTime - node.createdAtMs) / 350));
+            const remaining = Math.max(0, node.expiresAtMs - serverTime);
+            const alpha = Math.max(0.22, Math.min(1, remaining / 10_000));
+            const warningPulse = 0.94 + Math.sin(serverTime / 110) * 0.08;
+            const sx = node.x - camera.x + this.width / 2;
+            const sy = node.y - camera.y + this.height / 2;
+            const outerRadius = node.radius * (0.8 + warningPulse * 0.12);
+            const coreRadius = 18 + armedProgress * 14;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(249, 115, 22, ${alpha * 0.18})`;
+            ctx.arc(sx, sy, outerRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.setLineDash([12, 10]);
+            ctx.strokeStyle = `rgba(251, 146, 60, ${alpha * (0.5 + armedProgress * 0.45)})`;
+            ctx.lineWidth = 4.2;
+            ctx.arc(sx, sy, outerRadius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(254, 215, 170, ${alpha * 0.32})`;
+            ctx.arc(sx, sy, coreRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(239, 68, 68, ${alpha * 0.95})`;
+            ctx.lineWidth = 3.4;
+            ctx.arc(sx, sy, coreRadius * 0.72, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        for (const effect of this.mineEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const progress = 1 - alpha;
+            const radius = effect.radius * (0.4 + progress * 1.08);
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.beginPath();
+            ctx.fillStyle = this.hexToRgba(effect.color, alpha * effect.fillAlpha);
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.setLineDash([8, 6]);
+            ctx.strokeStyle = this.hexToRgba(effect.color, alpha * effect.strokeAlpha);
+            ctx.lineWidth = 4.6;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    }
+    drawTurretNodes(camera, serverTime) {
+        const ctx = this.context;
+        for (const [playerId, node] of this.turretNodes.entries()) {
+            if (node.expiresAtMs <= serverTime) {
+                this.turretNodes.delete(playerId);
+                continue;
+            }
+            const remaining = Math.max(0, node.expiresAtMs - serverTime);
+            const alpha = Math.max(0.25, Math.min(1, remaining / 6_000));
+            const sx = node.x - camera.x + this.width / 2;
+            const sy = node.y - camera.y + this.height / 2;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(34, 211, 238, ${alpha * 0.18})`;
+            ctx.arc(sx, sy, node.radius + 12, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(34, 211, 238, ${alpha * 0.9})`;
+            ctx.lineWidth = 3;
+            ctx.arc(sx, sy, node.radius + 8, 0, Math.PI * 2);
+            ctx.stroke();
+            const orbit = (serverTime / 190) % (Math.PI * 2);
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(125, 211, 252, ${alpha * 0.95})`;
+            ctx.arc(sx + Math.cos(orbit) * (node.radius + 1), sy + Math.sin(orbit) * (node.radius + 1), 2.6, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+    drawTurretPulseEffects(camera) {
+        const ctx = this.context;
+        for (const effect of this.turretPulseEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.rotate(effect.rotation);
+            ctx.strokeStyle = `rgba(56, 189, 248, ${alpha * 0.95})`;
+            ctx.lineWidth = 3.2;
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(effect.length, 0);
+            ctx.stroke();
+            ctx.strokeStyle = `rgba(186, 230, 253, ${alpha * 0.7})`;
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.moveTo(3, -3);
+            ctx.lineTo(effect.length - 3, -3);
+            ctx.moveTo(3, 3);
+            ctx.lineTo(effect.length - 3, 3);
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+    drawShieldAura(player, camera, serverTime) {
+        const aura = this.shieldAuras.get(player.id);
+        if (!aura) {
+            return;
+        }
+        if (aura.expiresAtMs <= serverTime) {
+            this.shieldAuras.delete(player.id);
+            return;
+        }
+        const remaining = Math.max(0, aura.expiresAtMs - serverTime);
+        const alpha = Math.max(0.2, Math.min(1, remaining / 1_500));
+        const sx = player.x - camera.x + this.width / 2;
+        const sy = player.y - camera.y + this.height / 2;
+        const ctx = this.context;
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(125, 211, 252, ${alpha * 0.95})`;
+        ctx.lineWidth = 3;
+        ctx.arc(sx, sy, aura.radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(14, 165, 233, ${alpha * 0.6})`;
+        ctx.lineWidth = 1.5;
+        ctx.arc(sx, sy, aura.radius + 4, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+    drawOverheatAura(player, camera, serverTime) {
+        const aura = this.overheatAuras.get(player.id);
+        if (!aura) {
+            return;
+        }
+        if (aura.penaltyEndsAtMs <= serverTime) {
+            this.overheatAuras.delete(player.id);
+            return;
+        }
+        const sx = player.x - camera.x + this.width / 2;
+        const sy = player.y - camera.y + this.height / 2;
+        const ctx = this.context;
+        if (serverTime < aura.overheatEndsAtMs) {
+            const remaining = Math.max(0, aura.overheatEndsAtMs - serverTime);
+            const alpha = Math.max(0.2, Math.min(1, remaining / 4_000));
+            const pulse = 1 + Math.sin(serverTime / 95) * 0.1;
+            const radius = aura.radius * pulse;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(249, 115, 22, ${alpha * 0.22})`;
+            ctx.arc(sx, sy, radius + 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(251, 146, 60, ${alpha * 0.95})`;
+            ctx.lineWidth = 3.2;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.stroke();
+            return;
+        }
+        const remainingPenalty = Math.max(0, aura.penaltyEndsAtMs - serverTime);
+        const alpha = Math.max(0.15, Math.min(1, remainingPenalty / 1_000));
+        const radius = aura.radius * (0.92 + (1 - alpha) * 0.16);
+        ctx.beginPath();
+        ctx.setLineDash([6, 5]);
+        ctx.strokeStyle = `rgba(244, 63, 94, ${alpha * 0.85})`;
+        ctx.lineWidth = 2.8;
+        ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    drawSiegeAura(player, camera, serverTime) {
+        const aura = this.siegeAuras.get(player.id);
+        if (!aura) {
+            return;
+        }
+        if (aura.expiresAtMs <= serverTime) {
+            this.siegeAuras.delete(player.id);
+            return;
+        }
+        const remaining = Math.max(0, aura.expiresAtMs - serverTime);
+        const alpha = Math.max(0.2, Math.min(1, remaining / 5_000));
+        const sx = player.x - camera.x + this.width / 2;
+        const sy = player.y - camera.y + this.height / 2;
+        const ctx = this.context;
+        ctx.beginPath();
+        ctx.setLineDash([12, 8]);
+        ctx.strokeStyle = `rgba(14, 165, 233, ${alpha * 0.85})`;
+        ctx.lineWidth = 3.8;
+        ctx.arc(sx, sy, aura.radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(186, 230, 253, ${alpha * 0.55})`;
+        ctx.lineWidth = 2;
+        ctx.arc(sx, sy, aura.radius + 4, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+    drawHomingTrailEffects(camera) {
+        const ctx = this.context;
+        for (const effect of this.homingTrailEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.rotate(effect.rotation);
+            ctx.strokeStyle = `rgba(248, 113, 113, ${alpha * 0.95})`;
+            ctx.lineWidth = 3.8;
+            ctx.beginPath();
+            ctx.moveTo(8, 0);
+            ctx.lineTo(effect.length, 0);
+            ctx.stroke();
+            ctx.strokeStyle = `rgba(254, 202, 202, ${alpha * 0.7})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(10, -4);
+            ctx.lineTo(effect.length - 6, -4);
+            ctx.moveTo(10, 4);
+            ctx.lineTo(effect.length - 6, 4);
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+    drawHomingImpactEffects(camera) {
+        const ctx = this.context;
+        for (const effect of this.homingImpactEffects) {
+            const alpha = Math.max(0, effect.life / effect.maxLife);
+            const progress = 1 - alpha;
+            const radius = effect.radius * (0.42 + progress * 1.18);
+            const sx = effect.x - camera.x + this.width / 2;
+            const sy = effect.y - camera.y + this.height / 2;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(244, 63, 94, ${alpha * 0.36})`;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(251, 113, 133, ${alpha * 0.95})`;
+            ctx.lineWidth = 4.2;
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+    }
     drawMuzzleFlashes(camera) {
         const ctx = this.context;
         for (const flash of this.muzzleFlashes) {
@@ -505,6 +1281,36 @@ export class CanvasRenderer {
         for (const pulse of this.respawnPulses) {
             pulse.life -= deltaSeconds;
         }
+        for (const effect of this.dashEffects) {
+            effect.life -= deltaSeconds;
+        }
+        for (const effect of this.empEffects) {
+            effect.life -= deltaSeconds;
+        }
+        for (const effect of this.burstEffects) {
+            effect.life -= deltaSeconds;
+        }
+        for (const effect of this.mineEffects) {
+            effect.life -= deltaSeconds;
+        }
+        for (const effect of this.turretPulseEffects) {
+            effect.life -= deltaSeconds;
+        }
+        for (const effect of this.repairEffects) {
+            effect.life -= deltaSeconds;
+        }
+        for (const effect of this.fogEffects) {
+            effect.life -= deltaSeconds;
+        }
+        for (const effect of this.orbitalEffects) {
+            effect.life -= deltaSeconds;
+        }
+        for (const effect of this.homingTrailEffects) {
+            effect.life -= deltaSeconds;
+        }
+        for (const effect of this.homingImpactEffects) {
+            effect.life -= deltaSeconds;
+        }
         this.selfDamageRingLife = Math.max(0, this.selfDamageRingLife - deltaSeconds);
         this.selfKillFlashLife = Math.max(0, this.selfKillFlashLife - deltaSeconds);
         this.roundTransitionLife = Math.max(0, this.roundTransitionLife - deltaSeconds);
@@ -512,6 +1318,16 @@ export class CanvasRenderer {
         this.pruneByLife(this.particles);
         this.pruneByLife(this.bulletTrails);
         this.pruneByLife(this.respawnPulses);
+        this.pruneByLife(this.dashEffects);
+        this.pruneByLife(this.empEffects);
+        this.pruneByLife(this.burstEffects);
+        this.pruneByLife(this.mineEffects);
+        this.pruneByLife(this.turretPulseEffects);
+        this.pruneByLife(this.repairEffects);
+        this.pruneByLife(this.fogEffects);
+        this.pruneByLife(this.orbitalEffects);
+        this.pruneByLife(this.homingTrailEffects);
+        this.pruneByLife(this.homingImpactEffects);
     }
     pruneByLife(collection) {
         let write = 0;

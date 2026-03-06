@@ -3,6 +3,10 @@ import type { Server as HttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import {
+  type AbilityVfxCue,
+  type AbilityId,
+  type AbilityOfferPayload,
+  type AbilitySlot,
   type BulletNetState,
   createNetworkCodec,
   FIXED_DELTA_SECONDS,
@@ -22,6 +26,8 @@ import {
   SocketEvents,
   type InputState,
   type JoinPayload,
+  type CastAbilityPayload,
+  type ChooseAbilityPayload,
   type PingAckPayload,
   type PingProbePayload,
   type StatKey,
@@ -118,6 +124,10 @@ const RATE_LIMIT_INPUT_WINDOW_MS = parsePositiveIntFromEnv("RATE_LIMIT_INPUT_WIN
 const RATE_LIMIT_INPUT_MAX_EVENTS = parsePositiveIntFromEnv("RATE_LIMIT_INPUT_MAX_EVENTS", 120);
 const RATE_LIMIT_UPGRADE_WINDOW_MS = parsePositiveIntFromEnv("RATE_LIMIT_UPGRADE_WINDOW_MS", 2_000);
 const RATE_LIMIT_UPGRADE_MAX_EVENTS = parsePositiveIntFromEnv("RATE_LIMIT_UPGRADE_MAX_EVENTS", 12);
+const RATE_LIMIT_ABILITY_CAST_WINDOW_MS = parsePositiveIntFromEnv("RATE_LIMIT_ABILITY_CAST_WINDOW_MS", 2_000);
+const RATE_LIMIT_ABILITY_CAST_MAX_EVENTS = parsePositiveIntFromEnv("RATE_LIMIT_ABILITY_CAST_MAX_EVENTS", 36);
+const RATE_LIMIT_ABILITY_CHOOSE_WINDOW_MS = parsePositiveIntFromEnv("RATE_LIMIT_ABILITY_CHOOSE_WINDOW_MS", 2_000);
+const RATE_LIMIT_ABILITY_CHOOSE_MAX_EVENTS = parsePositiveIntFromEnv("RATE_LIMIT_ABILITY_CHOOSE_MAX_EVENTS", 12);
 
 const EVENT_RATE_POLICIES: Record<string, EventRatePolicy> = {
   [SocketEvents.Join]: {
@@ -131,6 +141,14 @@ const EVENT_RATE_POLICIES: Record<string, EventRatePolicy> = {
   [SocketEvents.UpgradeStat]: {
     windowMs: RATE_LIMIT_UPGRADE_WINDOW_MS,
     maxEvents: RATE_LIMIT_UPGRADE_MAX_EVENTS
+  },
+  [SocketEvents.CastAbility]: {
+    windowMs: RATE_LIMIT_ABILITY_CAST_WINDOW_MS,
+    maxEvents: RATE_LIMIT_ABILITY_CAST_MAX_EVENTS
+  },
+  [SocketEvents.ChooseAbility]: {
+    windowMs: RATE_LIMIT_ABILITY_CHOOSE_WINDOW_MS,
+    maxEvents: RATE_LIMIT_ABILITY_CHOOSE_MAX_EVENTS
   }
 };
 
@@ -141,12 +159,13 @@ const MAX_RATE_VIOLATIONS_BEFORE_DISCONNECT = parsePositiveIntFromEnv(
 const RECONNECT_GRACE_MS = parsePositiveIntFromEnv("RECONNECT_GRACE_MS", 7_000);
 const MIN_UPGRADE_INTERVAL_MS = parsePositiveIntFromEnv("UPGRADE_MIN_INTERVAL_MS", 120);
 const METRICS_REPORT_INTERVAL_MS = 10_000;
+const MAX_PENDING_ABILITY_VFX_CUES = 512;
 const MAX_INPUT_SEQUENCE = 2_147_483_647;
 const NICKNAME_ALLOWED = /[^A-Za-z0-9 _-]/g;
-const MATCH_OBJECTIVE_KILLS = parsePositiveIntFromEnv("MATCH_OBJECTIVE_KILLS", 14);
-const MATCH_TIME_LIMIT_MS = parsePositiveIntFromEnv("MATCH_TIME_LIMIT_MS", 240_000);
+const MATCH_OBJECTIVE_KILLS = parsePositiveIntFromEnv("MATCH_OBJECTIVE_KILLS", 18);
+const MATCH_TIME_LIMIT_MS = parsePositiveIntFromEnv("MATCH_TIME_LIMIT_MS", 600_000);
 const MATCH_ROUND_END_PAUSE_MS = parsePositiveIntFromEnv("MATCH_ROUND_END_PAUSE_MS", 5_000);
-const MATCH_RESPAWN_DELAY_MS = parsePositiveIntFromEnv("MATCH_RESPAWN_DELAY_MS", 2_200);
+const MATCH_RESPAWN_DELAY_MS = parsePositiveIntFromEnv("MATCH_RESPAWN_DELAY_MS", 1_800);
 const MATCH_WIN_CONDITION = parseMatchWinConditionFromEnv(
   "MATCH_WIN_CONDITION",
   MatchWinCondition.TimeLimit
@@ -263,6 +282,57 @@ const sanitizeUpgradePayload = (payload: unknown): UpgradeStatPayload | null => 
   return { stat: statCandidate as StatKey };
 };
 
+const ABILITY_SLOTS: AbilitySlot[] = ["right_click", "slot_1", "slot_2", "slot_3"];
+const ABILITY_IDS: AbilityId[] = [
+  "dash_vectorial",
+  "emp_pulse",
+  "reactive_shield",
+  "piercing_burst",
+  "proximity_mine",
+  "light_turret",
+  "tank_repair",
+  "tactical_fog",
+  "overheat",
+  "orbital_barrage",
+  "siege_mode",
+  "homing_missile"
+];
+
+const sanitizeCastAbilityPayload = (payload: unknown): CastAbilityPayload | null => {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const slot = (payload as Partial<CastAbilityPayload>).slot;
+  if (typeof slot !== "string" || !ABILITY_SLOTS.includes(slot as AbilitySlot)) {
+    return null;
+  }
+
+  return { slot: slot as AbilitySlot };
+};
+
+const sanitizeChooseAbilityPayload = (payload: unknown): ChooseAbilityPayload | null => {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const slot = (payload as Partial<ChooseAbilityPayload>).slot;
+  const abilityId = (payload as Partial<ChooseAbilityPayload>).abilityId;
+  if (
+    typeof slot !== "string" ||
+    typeof abilityId !== "string" ||
+    !ABILITY_SLOTS.includes(slot as AbilitySlot) ||
+    !ABILITY_IDS.includes(abilityId as AbilityId)
+  ) {
+    return null;
+  }
+
+  return {
+    slot: slot as AbilitySlot,
+    abilityId: abilityId as AbilityId
+  };
+};
+
 const sanitizePingPayload = (payload: unknown): PingProbePayload | null => {
   if (!payload || typeof payload !== "object") {
     return null;
@@ -288,6 +358,7 @@ export class SocketGateway {
   private readonly socketSessions = new Map<string, SocketSessionState>();
   private readonly activePlayerSessions = new Map<string, ActivePlayerSession>();
   private readonly pendingReconnectByToken = new Map<string, PendingReconnectSession>();
+  private readonly pendingAbilityVfxCues: AbilityVfxCue[] = [];
   private readonly io: Server;
   private tick = 0;
   private timer: NodeJS.Timeout | null = null;
@@ -295,6 +366,8 @@ export class SocketGateway {
   private readonly metrics = {
     acceptedInputs: 0,
     acceptedUpgrades: 0,
+    acceptedAbilityCasts: 0,
+    acceptedAbilityChoices: 0,
     rejectedEvents: 0,
     rateLimitedEvents: 0,
     invalidPayloadEvents: 0,
@@ -512,6 +585,11 @@ export class SocketGateway {
         serverTime: Date.now(),
         resumeToken
       });
+
+      const player = this.world.getPlayer(playerId);
+      if (player?.pendingAbilityChoice) {
+        socket.emit(SocketEvents.AbilityOffer, player.pendingAbilityChoice);
+      }
     });
 
     socket.on(SocketEvents.Input, (payload: unknown) => {
@@ -577,6 +655,68 @@ export class SocketGateway {
       this.metrics.acceptedUpgrades += 1;
     });
 
+    socket.on(SocketEvents.ChooseAbility, (payload: unknown) => {
+      if (!allowEvent(SocketEvents.ChooseAbility)) {
+        this.logRejected(socket.id, SocketEvents.ChooseAbility, "rate_limited");
+        return;
+      }
+
+      const session = this.socketSessions.get(socket.id);
+      if (!session || !session.joined || !session.playerId) {
+        this.logRejected(socket.id, SocketEvents.ChooseAbility, "before_join");
+        return;
+      }
+
+      const choosePayload = sanitizeChooseAbilityPayload(payload);
+      if (!choosePayload) {
+        this.logRejected(socket.id, SocketEvents.ChooseAbility, "invalid_payload");
+        return;
+      }
+
+      const accepted = this.world.chooseAbility(
+        session.playerId,
+        choosePayload.slot,
+        choosePayload.abilityId,
+        this.tick
+      );
+      if (!accepted) {
+        this.logRejected(socket.id, SocketEvents.ChooseAbility, "rejected_by_world");
+        return;
+      }
+
+      this.metrics.acceptedAbilityChoices += 1;
+    });
+
+    socket.on(SocketEvents.CastAbility, (payload: unknown) => {
+      if (!allowEvent(SocketEvents.CastAbility)) {
+        this.logRejected(socket.id, SocketEvents.CastAbility, "rate_limited");
+        return;
+      }
+
+      const session = this.socketSessions.get(socket.id);
+      if (!session || !session.joined || !session.playerId) {
+        this.logRejected(socket.id, SocketEvents.CastAbility, "before_join");
+        return;
+      }
+
+      const castPayload = sanitizeCastAbilityPayload(payload);
+      if (!castPayload) {
+        this.logRejected(socket.id, SocketEvents.CastAbility, "invalid_payload");
+        return;
+      }
+
+      const result = this.world.castAbility(session.playerId, castPayload, this.tick, Date.now());
+      if (!result.ok) {
+        this.logRejected(socket.id, SocketEvents.CastAbility, "rejected_by_world");
+        if (result.rejected) {
+          socket.emit(SocketEvents.AbilityCastRejected, result.rejected);
+        }
+        return;
+      }
+
+      this.metrics.acceptedAbilityCasts += 1;
+    });
+
     socket.on(SocketEvents.Ping, (payload: unknown) => {
       const pingProbe = sanitizePingPayload(payload);
       if (!pingProbe) {
@@ -639,6 +779,14 @@ export class SocketGateway {
     const tickStartMs = performance.now();
     const stepMetrics = this.world.step(FIXED_DELTA_SECONDS, this.tick, nowMs);
     const sessionEvents = this.world.consumeSessionEvents();
+    const abilityOffers = this.world.consumeAbilityOfferEvents();
+    const tickAbilityVfxCues = this.world.consumeAbilityVfxCues();
+    if (tickAbilityVfxCues.length > 0) {
+      this.pendingAbilityVfxCues.push(...tickAbilityVfxCues);
+      if (this.pendingAbilityVfxCues.length > MAX_PENDING_ABILITY_VFX_CUES) {
+        this.pendingAbilityVfxCues.splice(0, this.pendingAbilityVfxCues.length - MAX_PENDING_ABILITY_VFX_CUES);
+      }
+    }
     const tickDurationMs = performance.now() - tickStartMs;
 
     this.metrics.tickDurationSamplesMs.push(tickDurationMs);
@@ -651,17 +799,34 @@ export class SocketGateway {
     this.metrics.collisionsEvaluatedSum += stepMetrics.collisionsEvaluated;
 
     if (this.tick % snapshotEveryTicks === 0) {
-      const deltaMetrics = this.broadcastDeltas(nowMs);
+      const cuesForSnapshot = [...this.pendingAbilityVfxCues];
+      this.pendingAbilityVfxCues.length = 0;
+      const deltaMetrics = this.broadcastDeltas(nowMs, cuesForSnapshot);
       this.metrics.payloadBytesSent += deltaMetrics.payloadBytesSent;
       this.metrics.payloadMessagesSent += deltaMetrics.payloadMessagesSent;
     }
 
     this.emitSessionEvents(sessionEvents);
+    this.emitAbilityOffers(abilityOffers);
 
     this.reportMetricsIfDue(nowMs);
   }
 
-  private broadcastDeltas(nowMs: number): { payloadBytesSent: number; payloadMessagesSent: number } {
+  private emitAbilityOffers(events: Array<{ playerId: string; payload: AbilityOfferPayload }>): void {
+    for (const event of events) {
+      const active = this.activePlayerSessions.get(event.playerId);
+      if (!active) {
+        continue;
+      }
+      const socket = this.io.sockets.sockets.get(active.socketId);
+      socket?.emit(SocketEvents.AbilityOffer, event.payload);
+    }
+  }
+
+  private broadcastDeltas(
+    nowMs: number,
+    abilityVfxCues: AbilityVfxCue[]
+  ): { payloadBytesSent: number; payloadMessagesSent: number } {
     const removedPlayers = this.world.consumeRemovedPlayers();
     const removedBullets = this.world.consumeRemovedBullets();
     const removedShapes = this.world.consumeRemovedShapes();
@@ -704,6 +869,10 @@ export class SocketGateway {
         powerUpsRemove: []
       };
 
+      if (abilityVfxCues.length > 0 && session.playerId) {
+        delta.abilityVfxCues = abilityVfxCues.map((cue) => this.toViewerVfxCue(cue, session.playerId!));
+      }
+
       if (tracker.knownSessionTick < sessionState.updatedAtTick) {
         delta.session = sessionState;
         tracker.knownSessionTick = sessionState.updatedAtTick;
@@ -712,10 +881,9 @@ export class SocketGateway {
       for (const player of this.world.getPlayers()) {
         const knownTick = tracker.knownPlayers.get(player.id) ?? -1;
         if (knownTick < player.updatedAtTick) {
-          let playerNetState = playerStateCache.get(player.id);
-          if (!playerNetState) {
-            playerNetState = this.world.toPlayerNetState(player);
-            playerStateCache.set(player.id, playerNetState);
+          const playerNetState = this.world.toPlayerNetState(player);
+          if (session.playerId !== player.id) {
+            delete playerNetState.abilityRuntime;
           }
 
           delta.playersUpsert.push(playerNetState);
@@ -810,6 +978,7 @@ export class SocketGateway {
       }
 
       if (
+        (delta.abilityVfxCues?.length ?? 0) > 0 ||
         delta.session ||
         delta.playersUpsert.length > 0 ||
         delta.playersRemove.length > 0 ||
@@ -839,6 +1008,24 @@ export class SocketGateway {
     return {
       payloadBytesSent,
       payloadMessagesSent
+    };
+  }
+
+  private toViewerVfxCue(cue: AbilityVfxCue, viewerPlayerId: string): AbilityVfxCue {
+    if (cue.casterPlayerId === viewerPlayerId) {
+      return cue;
+    }
+
+    const quantize = (value: number, step: number): number => Math.round(value / step) * step;
+    const radius = typeof cue.radius === "number" ? quantize(cue.radius, 18) : undefined;
+    const durationMs = typeof cue.durationMs === "number" ? quantize(cue.durationMs, 120) : undefined;
+
+    return {
+      ...cue,
+      x: quantize(cue.x, 16),
+      y: quantize(cue.y, 16),
+      ...(typeof radius === "number" ? { radius } : {}),
+      ...(typeof durationMs === "number" ? { durationMs } : {})
     };
   }
 

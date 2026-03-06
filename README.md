@@ -49,6 +49,32 @@ npm run dev
 npm run build
 ```
 
+### Docker
+
+```bash
+docker compose up --build
+```
+
+Esto levanta dos servicios:
+
+- Cliente estático en `http://localhost:8080`
+- Servidor Socket.io en `http://localhost:3001`
+
+El cliente en Docker usa el fallback ya incluido en runtime y, si no configurás `VITE_SERVER_URL`, intenta conectar al mismo host del navegador en el puerto `3001`.
+
+Variables útiles para compose:
+
+- `CLIENT_PORT` publica el frontend localmente (default `8080`)
+- `PORT` publica el server localmente (default `3001`)
+- `VITE_SERVER_URL` fuerza la URL del socket en el build del cliente si necesitás apuntar a otro host
+
+Ejemplo con URL explícita del server:
+
+```bash
+$env:VITE_SERVER_URL='http://localhost:3001'
+docker compose up --build
+```
+
 ### Typecheck (runtime MVP)
 
 ```bash

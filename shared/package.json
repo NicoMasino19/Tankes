@@ -12,7 +12,7 @@
   },
   "scripts": {
     "dev": "tsc -w -p tsconfig.json",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node ../scripts/fix-esm-imports.mjs dist",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

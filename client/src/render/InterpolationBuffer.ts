@@ -1,4 +1,5 @@
 import {
+  type AbilityVfxCue,
   INTERPOLATION_DELAY_MS,
   type BulletNetState,
   type MatchState,
@@ -17,6 +18,7 @@ interface BufferedState {
 export interface InterpolatedWorld {
   tick: number;
   serverTime: number;
+  abilityVfxCues: AbilityVfxCue[];
   session: MatchState | null;
   players: PlayerNetState[];
   bullets: BulletNetState[];
@@ -63,7 +65,17 @@ export class InterpolationBuffer {
   getInterpolated(): InterpolatedWorld {
     const firstEntry = this.history[0];
     if (!firstEntry) {
-      return { tick: 0, serverTime: 0, session: null, players: [], bullets: [], shapes: [], zones: [], powerUps: [] };
+      return {
+        tick: 0,
+        serverTime: 0,
+        abilityVfxCues: [],
+        session: null,
+        players: [],
+        bullets: [],
+        shapes: [],
+        zones: [],
+        powerUps: []
+      };
     }
 
     if (this.history.length === 1) {
@@ -71,6 +83,7 @@ export class InterpolationBuffer {
       return {
         tick: only.tick,
         serverTime: only.serverTime,
+        abilityVfxCues: only.abilityVfxCues,
         session: only.session,
         players: Array.from(only.players.values()),
         bullets: Array.from(only.bullets.values()),
@@ -150,6 +163,7 @@ export class InterpolationBuffer {
     return {
       tick: newer.state.tick,
       serverTime: renderServerTime,
+      abilityVfxCues: newer.state.abilityVfxCues,
       session: newer.state.session,
       players,
       bullets,

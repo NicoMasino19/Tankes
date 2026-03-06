@@ -57,6 +57,9 @@ const statsHud = new StatsHud(
   (stat) => {
     socketClient.upgradeStat({ stat });
   },
+  ({ slot, abilityId }) => {
+    socketClient.chooseAbility({ slot, abilityId });
+  },
   {
     initialState: sfx.getSettings(),
     onToggleMute: () => {
@@ -72,10 +75,19 @@ const statsHud = new StatsHud(
 );
 app.appendChild(statsHud.element);
 
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !joined) {
+    return;
+  }
+
+  event.preventDefault();
+  statsHud.togglePauseMenu();
+});
+
 const defaultServerUrl = `${window.location.protocol === "https:" ? "https" : "http"}://${window.location.hostname || "127.0.0.1"}:3001`;
 
 const socketClient = new ClientSocket({
-  serverUrl: import.meta.env.VITE_SERVER_URL ?? defaultServerUrl,
+  serverUrl: import.meta.env.VITE_SERVER_URL || defaultServerUrl,
   onJoinAck: (payload) => {
     selfId = payload.playerId;
     joined = true;
@@ -209,6 +221,12 @@ const socketClient = new ClientSocket({
     }
     interpolation.push(state);
   },
+  onAbilityOffer: (payload) => {
+    statsHud.setAbilityOffer(payload);
+  },
+  onAbilityCastRejected: (payload) => {
+    statsHud.showAbilityCastRejected(payload);
+  },
   onRoundEnded: () => {
     sfx.playRoundEnded();
     renderer.triggerRoundTransition("ended");
@@ -256,6 +274,9 @@ const loop = (now: number): void => {
     const allowInput = !latestInterpolated.session || latestInterpolated.session.phase === "in_progress";
     if (joined && selfId && allowInput) {
       socketClient.sendInput(input.buildInput(worldMouse.x, worldMouse.y));
+      for (const trigger of input.consumeAbilityTriggers()) {
+        socketClient.castAbility(trigger);
+      }
     }
     accumulator -= 1 / 30;
   }

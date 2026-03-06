@@ -1,4 +1,5 @@
 import {
+  type AbilityVfxCue,
   type BulletNetState,
   type MatchState,
   type PlayerNetState,
@@ -11,6 +12,7 @@ import {
 export interface WorldState {
   tick: number;
   serverTime: number;
+  abilityVfxCues: AbilityVfxCue[];
   session: MatchState | null;
   players: Map<string, PlayerNetState>;
   bullets: Map<string, BulletNetState>;
@@ -49,6 +51,7 @@ export class ClientWorld {
   private readonly shapes = new Map<string, ShapeNetState>();
   private readonly zones = new Map<string, ZoneNetState>();
   private readonly powerUps = new Map<string, PowerUpNetState>();
+  private lastAbilityVfxCues: AbilityVfxCue[] = [];
   private session: MatchState | null = null;
   private tick = 0;
   private serverTime = 0;
@@ -56,6 +59,7 @@ export class ClientWorld {
   applyDelta(delta: WorldDeltaSnapshot): WorldState {
     this.tick = delta.tick;
     this.serverTime = delta.serverTime;
+    this.lastAbilityVfxCues = delta.abilityVfxCues ? [...delta.abilityVfxCues] : [];
     if (delta.session) {
       this.session = delta.session;
     }
@@ -102,6 +106,7 @@ export class ClientWorld {
     return {
       tick: this.tick,
       serverTime: this.serverTime,
+      abilityVfxCues: [...this.lastAbilityVfxCues],
       session: cloneSession(this.session),
       players: cloneMap(this.players),
       bullets: cloneMap(this.bullets),

@@ -1,4 +1,12 @@
-import type { BuffType, InputState, PlayerStats, ShapeKind } from "@tankes/shared";
+import type {
+  AbilityId,
+  AbilitySlot,
+  BuffType,
+  InputState,
+  PendingAbilityChoiceNetState,
+  PlayerStats,
+  ShapeKind
+} from "@tankes/shared";
 
 export interface ActiveBuffStateEntity {
   type: BuffType;
@@ -25,6 +33,9 @@ export interface PlayerEntity {
   level: number;
   upgradePoints: number;
   stats: PlayerStats;
+  abilityLoadout: Partial<Record<AbilitySlot, AbilityId>>;
+  abilityCooldownEndsAtMs: Partial<Record<AbilitySlot, number>>;
+  pendingAbilityChoice: PendingAbilityChoiceNetState | null;
   activeBuffs: ActiveBuffStateEntity[];
   input: InputState;
   lastAcceptedInputSequence: number;
