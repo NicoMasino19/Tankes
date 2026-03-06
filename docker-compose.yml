@@ -8,6 +8,12 @@ services:
       NET_CODEC: ${NET_CODEC:-msgpack}
     ports:
       - "${PORT:-3001}:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped
 
   client:
@@ -17,7 +23,14 @@ services:
       args:
         VITE_SERVER_URL: ${VITE_SERVER_URL:-}
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     ports:
       - "${CLIENT_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped

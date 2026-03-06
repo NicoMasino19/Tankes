@@ -391,7 +391,22 @@ export class SocketGateway {
   };
 
   constructor(private readonly port: number) {
-    this.httpServer = createServer();
+    this.httpServer = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/health") {
+        response.writeHead(200, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store"
+        });
+        response.end("ok");
+        return;
+      }
+
+      response.writeHead(404, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store"
+      });
+      response.end("not found");
+    });
     this.io = new Server(this.httpServer, {
       cors: {
         origin: "*"
