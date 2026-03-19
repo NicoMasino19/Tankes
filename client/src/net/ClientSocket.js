@@ -56,8 +56,13 @@ export class ClientSocket {
             this.options.onJoinAck(payload);
         });
         socket.on(SocketEvents.WorldUpdate, (payload) => {
-            const delta = this.codec.decodeWorldUpdate(payload);
-            this.options.onWorldDelta(delta);
+            try {
+                const delta = this.codec.decodeWorldUpdate(payload);
+                this.options.onWorldDelta(delta);
+            }
+            catch {
+                // Malformed snapshot — drop frame silently
+            }
         });
         socket.on(SocketEvents.RoundEnded, (payload) => {
             this.options.onRoundEnded?.(payload);

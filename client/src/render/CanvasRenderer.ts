@@ -1,6 +1,4 @@
 import {
-  AbilityId,
-  AbilityVfxPhase,
   BuffType,
   PLAYER_RADIUS,
   ShapeKind,
@@ -13,6 +11,27 @@ import {
   type ZoneNetState
 } from "@tankes/shared";
 import type { InterpolatedWorld } from "./InterpolationBuffer";
+import {
+  cleanupExpiredVfx,
+  dispatchAbilityVfxCue,
+  type BurstEffect,
+  type DashEffect,
+  type EmpEffect,
+  type FogEffect,
+  type FogZoneEffect,
+  type HomingImpactEffect,
+  type HomingTrailEffect,
+  type MineEffect,
+  type MineNodeEffect,
+  type OrbitalEffect,
+  type OverheatAuraEffect,
+  type RepairEffect,
+  type ShieldAuraEffect,
+  type SiegeAuraEffect,
+  type TurretNodeEffect,
+  type TurretPulseEffect,
+  type VfxEffectArrays
+} from "./AbilityVfxHandler";
 
 interface MuzzleFlash {
   x: number;
@@ -45,136 +64,6 @@ interface BulletTrail {
 interface RespawnPulse {
   x: number;
   y: number;
-  life: number;
-  maxLife: number;
-}
-
-interface DashEffect {
-  x: number;
-  y: number;
-  rotation: number;
-  life: number;
-  maxLife: number;
-}
-
-interface EmpEffect {
-  x: number;
-  y: number;
-  radius: number;
-  life: number;
-  maxLife: number;
-}
-
-interface ShieldAuraEffect {
-  playerId: string;
-  expiresAtMs: number;
-  radius: number;
-}
-
-interface BurstEffect {
-  x: number;
-  y: number;
-  rotation: number;
-  life: number;
-  maxLife: number;
-  radius: number;
-}
-
-interface MineEffect {
-  x: number;
-  y: number;
-  life: number;
-  maxLife: number;
-  radius: number;
-  color: string;
-  fillAlpha: number;
-  strokeAlpha: number;
-}
-
-interface MineNodeEffect {
-  playerId: string;
-  x: number;
-  y: number;
-  createdAtMs: number;
-  expiresAtMs: number;
-  radius: number;
-}
-
-interface TurretPulseEffect {
-  x: number;
-  y: number;
-  rotation: number;
-  length: number;
-  life: number;
-  maxLife: number;
-}
-
-interface TurretNodeEffect {
-  playerId: string;
-  x: number;
-  y: number;
-  expiresAtMs: number;
-  radius: number;
-}
-
-interface RepairEffect {
-  x: number;
-  y: number;
-  radius: number;
-  life: number;
-  maxLife: number;
-}
-
-interface FogEffect {
-  x: number;
-  y: number;
-  radius: number;
-  life: number;
-  maxLife: number;
-}
-
-interface FogZoneEffect {
-  playerId: string;
-  x: number;
-  y: number;
-  expiresAtMs: number;
-  radius: number;
-}
-
-interface OverheatAuraEffect {
-  playerId: string;
-  overheatEndsAtMs: number;
-  penaltyEndsAtMs: number;
-  radius: number;
-}
-
-interface OrbitalEffect {
-  x: number;
-  y: number;
-  radius: number;
-  life: number;
-  maxLife: number;
-}
-
-interface SiegeAuraEffect {
-  playerId: string;
-  expiresAtMs: number;
-  radius: number;
-}
-
-interface HomingTrailEffect {
-  x: number;
-  y: number;
-  rotation: number;
-  length: number;
-  life: number;
-  maxLife: number;
-}
-
-interface HomingImpactEffect {
-  x: number;
-  y: number;
-  radius: number;
   life: number;
   maxLife: number;
 }
@@ -346,347 +235,45 @@ export class CanvasRenderer {
     this.drawScreenEffects();
   }
 
+  private get vfxEffects(): VfxEffectArrays {
+    return {
+      dashEffects: this.dashEffects,
+      empEffects: this.empEffects,
+      burstEffects: this.burstEffects,
+      mineEffects: this.mineEffects,
+      turretPulseEffects: this.turretPulseEffects,
+      repairEffects: this.repairEffects,
+      fogEffects: this.fogEffects,
+      orbitalEffects: this.orbitalEffects,
+      homingTrailEffects: this.homingTrailEffects,
+      homingImpactEffects: this.homingImpactEffects,
+      shieldAuras: this.shieldAuras,
+      mineNodes: this.mineNodes,
+      turretNodes: this.turretNodes,
+      fogZones: this.fogZones,
+      overheatAuras: this.overheatAuras,
+      siegeAuras: this.siegeAuras,
+      maxDashEffects: CanvasRenderer.MAX_DASH_EFFECTS,
+      maxEmpEffects: CanvasRenderer.MAX_EMP_EFFECTS,
+      maxBurstEffects: CanvasRenderer.MAX_BURST_EFFECTS,
+      maxMineEffects: CanvasRenderer.MAX_MINE_EFFECTS,
+      maxTurretPulses: CanvasRenderer.MAX_TURRET_PULSES,
+      maxRepairEffects: CanvasRenderer.MAX_REPAIR_EFFECTS,
+      maxFogEffects: CanvasRenderer.MAX_FOG_EFFECTS,
+      maxOrbitalEffects: CanvasRenderer.MAX_ORBITAL_EFFECTS,
+      maxHomingTrails: CanvasRenderer.MAX_HOMING_TRAILS,
+      maxHomingImpacts: CanvasRenderer.MAX_HOMING_IMPACTS
+    };
+  }
+
   private ingestAbilityVfxCues(cues: AbilityVfxCue[], serverTime: number): void {
-    for (const [cueId, expiresAtMs] of this.seenAbilityCueExpiryById.entries()) {
-      if (expiresAtMs <= serverTime) {
-        this.seenAbilityCueExpiryById.delete(cueId);
-      }
-    }
-
-    for (const [playerId, node] of this.turretNodes.entries()) {
-      if (node.expiresAtMs <= serverTime) {
-        this.turretNodes.delete(playerId);
-      }
-    }
-
-    for (const [playerId, node] of this.mineNodes.entries()) {
-      if (node.expiresAtMs <= serverTime) {
-        this.mineNodes.delete(playerId);
-      }
-    }
-
-    for (const [playerId, zone] of this.fogZones.entries()) {
-      if (zone.expiresAtMs <= serverTime) {
-        this.fogZones.delete(playerId);
-      }
-    }
-
-    for (const [playerId, aura] of this.overheatAuras.entries()) {
-      if (aura.penaltyEndsAtMs <= serverTime) {
-        this.overheatAuras.delete(playerId);
-      }
-    }
-
-    for (const [playerId, aura] of this.siegeAuras.entries()) {
-      if (aura.expiresAtMs <= serverTime) {
-        this.siegeAuras.delete(playerId);
-      }
-    }
+    const fx = this.vfxEffects;
+    cleanupExpiredVfx(serverTime, fx, this.seenAbilityCueExpiryById);
 
     for (const cue of cues) {
-      if (this.seenAbilityCueExpiryById.has(cue.id)) {
-        continue;
-      }
-
+      if (this.seenAbilityCueExpiryById.has(cue.id)) continue;
       this.seenAbilityCueExpiryById.set(cue.id, cue.createdAtMs + cue.ttlMs + 200);
-
-      if (cue.abilityId === AbilityId.DashVectorial && cue.phase === AbilityVfxPhase.Cast) {
-        this.dashEffects.push({
-          x: cue.x,
-          y: cue.y,
-          rotation: cue.rotation ?? 0,
-          life: 0.34,
-          maxLife: 0.34
-        });
-        this.trim(this.dashEffects, CanvasRenderer.MAX_DASH_EFFECTS);
-        continue;
-      }
-
-      if (cue.abilityId === AbilityId.EmpPulse && cue.phase === AbilityVfxPhase.Pulse) {
-        this.empEffects.push({
-          x: cue.x,
-          y: cue.y,
-          radius: (cue.radius ?? 200) * 1.2,
-          life: 0.54,
-          maxLife: 0.54
-        });
-        this.trim(this.empEffects, CanvasRenderer.MAX_EMP_EFFECTS);
-        continue;
-      }
-
-      if (cue.abilityId === AbilityId.ReactiveShield) {
-        if (cue.phase === AbilityVfxPhase.Cast) {
-          this.shieldAuras.set(cue.casterPlayerId, {
-            playerId: cue.casterPlayerId,
-            expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 1_500),
-            radius: cue.radius ?? PLAYER_RADIUS + 10
-          });
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Expire) {
-          this.shieldAuras.delete(cue.casterPlayerId);
-        }
-      }
-
-      if (cue.abilityId === AbilityId.PiercingBurst && cue.phase === AbilityVfxPhase.Cast) {
-        this.burstEffects.push({
-          x: cue.x,
-          y: cue.y,
-          rotation: cue.rotation ?? 0,
-          radius: (cue.radius ?? 140) * 1.35,
-          life: 0.3,
-          maxLife: 0.3
-        });
-        this.trim(this.burstEffects, CanvasRenderer.MAX_BURST_EFFECTS);
-        continue;
-      }
-
-      if (cue.abilityId === AbilityId.ProximityMine) {
-        if (cue.phase === AbilityVfxPhase.Cast) {
-          this.mineNodes.set(cue.casterPlayerId, {
-            playerId: cue.casterPlayerId,
-            x: cue.x,
-            y: cue.y,
-            createdAtMs: cue.createdAtMs,
-            expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 10_000),
-            radius: cue.radius ?? 180
-          });
-          this.mineEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: (cue.radius ?? 180) * 0.52,
-            life: 0.34,
-            maxLife: 0.34,
-            color: "#f97316",
-            fillAlpha: 0.24,
-            strokeAlpha: 0.95
-          });
-          this.trim(this.mineEffects, CanvasRenderer.MAX_MINE_EFFECTS);
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Impact) {
-          this.mineNodes.delete(cue.casterPlayerId);
-          this.mineEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: (cue.radius ?? 180) * 1.36,
-            life: 0.58,
-            maxLife: 0.58,
-            color: "#fb7185",
-            fillAlpha: 0.56,
-            strokeAlpha: 1
-          });
-          this.trim(this.mineEffects, CanvasRenderer.MAX_MINE_EFFECTS);
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Expire) {
-          this.mineNodes.delete(cue.casterPlayerId);
-          this.mineEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: (cue.radius ?? 180) * 0.5,
-            life: 0.22,
-            maxLife: 0.22,
-            color: "#f59e0b",
-            fillAlpha: 0.14,
-            strokeAlpha: 0.6
-          });
-          this.trim(this.mineEffects, CanvasRenderer.MAX_MINE_EFFECTS);
-          continue;
-        }
-      }
-
-      if (cue.abilityId === AbilityId.LightTurret) {
-        if (cue.phase === AbilityVfxPhase.Cast) {
-          this.turretNodes.set(cue.casterPlayerId, {
-            playerId: cue.casterPlayerId,
-            x: cue.x,
-            y: cue.y,
-            expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 6_000),
-            radius: cue.radius ?? 24
-          });
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Pulse) {
-          this.turretPulseEffects.push({
-            x: cue.x,
-            y: cue.y,
-            rotation: cue.rotation ?? 0,
-            length: (cue.radius ?? 80) * 1.15,
-            life: 0.2,
-            maxLife: 0.2
-          });
-          this.trim(this.turretPulseEffects, CanvasRenderer.MAX_TURRET_PULSES);
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Expire) {
-          this.turretNodes.delete(cue.casterPlayerId);
-          this.mineEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: cue.radius ?? 24,
-            life: 0.2,
-            maxLife: 0.2,
-            color: "#22d3ee",
-            fillAlpha: 0.2,
-            strokeAlpha: 0.85
-          });
-          this.trim(this.mineEffects, CanvasRenderer.MAX_MINE_EFFECTS);
-        }
-      }
-
-      if (cue.abilityId === AbilityId.TankRepair && cue.phase === AbilityVfxPhase.Cast) {
-        this.repairEffects.push({
-          x: cue.x,
-          y: cue.y,
-          radius: (cue.radius ?? PLAYER_RADIUS + 16) * 1.3,
-          life: 0.46,
-          maxLife: 0.46
-        });
-        this.trim(this.repairEffects, CanvasRenderer.MAX_REPAIR_EFFECTS);
-        continue;
-      }
-
-      if (cue.abilityId === AbilityId.TacticalFog) {
-        if (cue.phase === AbilityVfxPhase.Cast) {
-          this.fogZones.set(cue.casterPlayerId, {
-            playerId: cue.casterPlayerId,
-            x: cue.x,
-            y: cue.y,
-            expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 6_500),
-            radius: (cue.radius ?? 380) * 1.08
-          });
-          this.fogEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: (cue.radius ?? 380) * 1.2,
-            life: 0.9,
-            maxLife: 0.9
-          });
-          this.trim(this.fogEffects, CanvasRenderer.MAX_FOG_EFFECTS);
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Pulse) {
-          this.fogEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: (cue.radius ?? 380) * 1.28,
-            life: 1.1,
-            maxLife: 1.1
-          });
-          this.trim(this.fogEffects, CanvasRenderer.MAX_FOG_EFFECTS);
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Expire) {
-          this.fogZones.delete(cue.casterPlayerId);
-          this.fogEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: (cue.radius ?? 380) * 1.04,
-            life: 0.45,
-            maxLife: 0.45
-          });
-          this.trim(this.fogEffects, CanvasRenderer.MAX_FOG_EFFECTS);
-          continue;
-        }
-      }
-
-      if (cue.abilityId === AbilityId.Overheat) {
-        if (cue.phase === AbilityVfxPhase.Cast) {
-          const overheatEndsAtMs = cue.createdAtMs + (cue.durationMs ?? 4_000);
-          this.overheatAuras.set(cue.casterPlayerId, {
-            playerId: cue.casterPlayerId,
-            overheatEndsAtMs,
-            penaltyEndsAtMs: overheatEndsAtMs,
-            radius: cue.radius ?? PLAYER_RADIUS + 16
-          });
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Expire) {
-          const previous = this.overheatAuras.get(cue.casterPlayerId);
-          this.overheatAuras.set(cue.casterPlayerId, {
-            playerId: cue.casterPlayerId,
-            overheatEndsAtMs: cue.createdAtMs,
-            penaltyEndsAtMs: cue.createdAtMs + (cue.durationMs ?? 1_000),
-            radius: cue.radius ?? previous?.radius ?? PLAYER_RADIUS + 16
-          });
-        }
-      }
-
-      if (cue.abilityId === AbilityId.OrbitalBarrage) {
-        if (cue.phase === AbilityVfxPhase.Cast) {
-          this.orbitalEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: (cue.radius ?? 180) * 0.9,
-            life: 0.28,
-            maxLife: 0.28
-          });
-          this.trim(this.orbitalEffects, CanvasRenderer.MAX_ORBITAL_EFFECTS);
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Pulse) {
-          this.orbitalEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: (cue.radius ?? 180) * 1.25,
-            life: 0.56,
-            maxLife: 0.56
-          });
-          this.trim(this.orbitalEffects, CanvasRenderer.MAX_ORBITAL_EFFECTS);
-          continue;
-        }
-      }
-
-      if (cue.abilityId === AbilityId.SiegeMode) {
-        if (cue.phase === AbilityVfxPhase.Cast) {
-          this.siegeAuras.set(cue.casterPlayerId, {
-            playerId: cue.casterPlayerId,
-            expiresAtMs: cue.createdAtMs + (cue.durationMs ?? 5_000),
-            radius: cue.radius ?? PLAYER_RADIUS + 22
-          });
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Expire) {
-          this.siegeAuras.delete(cue.casterPlayerId);
-        }
-      }
-
-      if (cue.abilityId === AbilityId.HomingMissile) {
-        if (cue.phase === AbilityVfxPhase.Cast) {
-          this.homingTrailEffects.push({
-            x: cue.x,
-            y: cue.y,
-            rotation: cue.rotation ?? 0,
-            length: (cue.radius ?? 180) * 1.25,
-            life: 0.24,
-            maxLife: 0.24
-          });
-          this.trim(this.homingTrailEffects, CanvasRenderer.MAX_HOMING_TRAILS);
-          continue;
-        }
-
-        if (cue.phase === AbilityVfxPhase.Impact) {
-          this.homingImpactEffects.push({
-            x: cue.x,
-            y: cue.y,
-            radius: (cue.radius ?? 130) * 1.3,
-            life: 0.48,
-            maxLife: 0.48
-          });
-          this.trim(this.homingImpactEffects, CanvasRenderer.MAX_HOMING_IMPACTS);
-        }
-      }
+      dispatchAbilityVfxCue(cue, fx);
     }
   }
 

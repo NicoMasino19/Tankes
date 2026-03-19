@@ -15,23 +15,10 @@ import {
   BUFF_MOVEMENT_PER_STACK,
   BUFF_RELOAD_PER_STACK,
   BuffType,
-  CONTROL_ZONE_BASE_CONFIG,
-  CONTROL_ZONE_CAPTURE_RATE_PER_SECOND,
-  CONTROL_ZONE_MAX_ACTIVE,
-  CONTROL_ZONE_SPAWN_ATTEMPTS,
-  CONTROL_ZONE_SPAWN_INTERVAL_MS,
-  CONTROL_ZONE_SPAWN_MARGIN,
   GRID_CELL_SIZE,
   MatchWinCondition,
   PLAYER_RADIUS,
   POWER_UP_DURATION_MS,
-  POWER_UP_MAX_ACTIVE,
-  POWER_UP_RADIUS,
-  POWER_UP_SPAWN_ATTEMPTS,
-  POWER_UP_SPAWN_INTERVAL_MS,
-  POWER_UP_SPAWN_PLAYER_SAFE_DISTANCE,
-  POWER_UP_TTL_MS,
-  POWER_UP_TYPE_WEIGHTS,
   RESPAWN_INVULNERABILITY_MS,
   ShapeKind,
   type AbilityCastRejectedPayload,
@@ -71,6 +58,8 @@ import { TankFactory } from "../sim/factories/TankFactory";
 import { BulletFactory } from "../sim/factories/BulletFactory";
 import { BulletPool } from "../sim/pool/BulletPool";
 import { UniformGrid } from "../sim/spatial/UniformGrid";
+import { ZoneSystem } from "./ZoneSystem";
+import { PowerUpSystem } from "./PowerUpSystem";
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
@@ -84,8 +73,6 @@ const SHAPE_SPAWN_MARGIN = 90;
 const SHAPE_SPAWN_ATTEMPTS = 64;
 const SHAPE_PLAYER_SPAWN_GAP = PLAYER_RADIUS * 2;
 const ZONE_XP_ACCURACY_SCALE = 100;
-const POWER_UP_PLAYER_COLLISION_EXTRA = 4;
-const POWER_UP_SHAPE_SAFE_DISTANCE = 36;
 const PVP_STEAL_XP_RATIO = 0.12;
 const PVP_STEAL_XP_MIN = 18;
 const PVP_STEAL_XP_MAX = 90;
@@ -228,7 +215,11 @@ export class World {
   private readonly tankFactory = new TankFactory();
   private readonly bulletFactory = new BulletFactory(new BulletPool());
   private readonly spatialGrid = new UniformGrid(GRID_CELL_SIZE);
+  private readonly shapeGrid = new UniformGrid(GRID_CELL_SIZE);
+  private readonly zoneSystem = new ZoneSystem();
+  private readonly powerUpSystem = new PowerUpSystem();
   private readonly nearbyPlayersBuffer: string[] = [];
+  private readonly nearbyShapeIdsBuffer: string[] = [];
   private readonly nearbyShapesBuffer: ShapeEntity[] = [];
   private readonly playerKills = new Map<string, number>();
   private readonly playerDeaths = new Map<string, number>();
@@ -257,10 +248,6 @@ export class World {
   private lastRoundResult: RoundEndedPayload | null = null;
   private sessionUpdatedAtTick = 0;
   private nextShapeSequence = 0;
-  private nextZoneSequence = 0;
-  private nextPowerUpSequence = 0;
-  private lastZoneSpawnAtMs = 0;
-  private lastPowerUpSpawnAtMs = 0;
   private nextAbilityVfxCueSequence = 0;
 
   constructor(options?: WorldOptions) {
@@ -269,8 +256,6 @@ export class World {
       ...(options?.matchConfig ?? {})
     };
 
-    this.lastZoneSpawnAtMs = -CONTROL_ZONE_SPAWN_INTERVAL_MS;
-    this.lastPowerUpSpawnAtMs = Date.now();
   }
 
   addPlayer(id: string, nickname: string, tick: number): PlayerEntity {
@@ -375,8 +360,32 @@ export class World {
     this.updateBuffExpirations(tick, nowMs);
     this.updateAbilityRuntime(tick, nowMs);
     this.ensureShapePopulation(tick);
-    this.updateControlZones(dtSeconds, tick, nowMs);
-    this.updatePowerUps(dtSeconds, tick, nowMs);
+    this.zoneSystem.update({
+      zones: this.zones,
+      players: this.players.values(),
+      shapes: this.shapes.values(),
+      powerUps: this.powerUps.values(),
+      dtSeconds,
+      tick,
+      nowMs,
+      isPendingRespawn: (id) => this.isPendingRespawn(id, nowMs),
+      awardPresenceXp: (p, xps, dt, t) => this.awardPresenceXp(p, xps, dt, t),
+      awardXp: (p, xp, t) => this.awardXp(p, xp, t),
+      getPlayer: (id) => this.players.get(id),
+      removeZone: (id) => { this.zones.delete(id); this.removedZones.add(id); },
+      onZoneAdded: (id) => { this.removedZones.delete(id); }
+    });
+    this.powerUpSystem.update({
+      powerUps: this.powerUps,
+      players: this.players.values(),
+      shapes: this.shapes.values(),
+      tick,
+      nowMs,
+      isPendingRespawn: (id) => this.isPendingRespawn(id, nowMs),
+      applyPowerUp: (p, bt, ms, t) => this.applyPowerUp(p, bt, ms, t),
+      removePowerUp: (id) => { this.powerUps.delete(id); this.removedPowerUps.add(id); },
+      onPowerUpAdded: (id) => { this.removedPowerUps.delete(id); }
+    });
     this.evaluateRoundEnd(tick, nowMs);
 
     if (this.isRoundEnded()) {
@@ -1375,6 +1384,11 @@ export class World {
       this.spatialGrid.insert(player.id, player.x, player.y);
     }
 
+    this.shapeGrid.clear();
+    for (const shape of this.shapes.values()) {
+      this.shapeGrid.insert(shape.id, shape.x, shape.y);
+    }
+
     for (const bullet of this.bullets.values()) {
       if (this.roundPhase === MatchPhase.Ended) {
         return collisionsEvaluated;
@@ -1601,303 +1615,6 @@ export class World {
     }
   }
 
-  private updateControlZones(dtSeconds: number, tick: number, nowMs: number): void {
-    if (this.zones.size < CONTROL_ZONE_MAX_ACTIVE && nowMs - this.lastZoneSpawnAtMs >= CONTROL_ZONE_SPAWN_INTERVAL_MS) {
-      if (this.spawnControlZone(tick)) {
-        this.lastZoneSpawnAtMs = nowMs;
-      }
-    }
-
-    const capturedZoneIds: string[] = [];
-
-    for (const zone of this.zones.values()) {
-      const contenders: PlayerEntity[] = [];
-      for (const player of this.players.values()) {
-        if (player.hp <= 0 || this.isPendingRespawn(player.id, nowMs)) {
-          continue;
-        }
-
-        const dx = player.x - zone.x;
-        const dy = player.y - zone.y;
-        if (dx * dx + dy * dy <= zone.radius * zone.radius) {
-          contenders.push(player);
-          this.awardPresenceXp(player, zone.xpPerSecond, dtSeconds, tick);
-        }
-      }
-
-      const contenderIds = [...new Set(contenders.map((player) => player.id))];
-      const previousOwner = zone.ownerPlayerId;
-      const previousCapturePlayer = zone.capturingPlayerId;
-      const previousProgress = zone.captureProgress;
-      const previousContested = zone.contested;
-
-      zone.contested = contenderIds.length > 1;
-
-      if (contenderIds.length === 1) {
-        const contenderId = contenderIds[0] ?? null;
-        if (!contenderId) {
-          continue;
-        }
-
-        if (zone.ownerPlayerId === contenderId) {
-          zone.capturingPlayerId = null;
-          zone.captureProgress = 0;
-        } else {
-          if (zone.capturingPlayerId !== contenderId) {
-            zone.capturingPlayerId = contenderId;
-            zone.captureProgress = 0;
-          }
-
-          zone.captureProgress = clamp(zone.captureProgress + CONTROL_ZONE_CAPTURE_RATE_PER_SECOND * dtSeconds, 0, 1);
-          if (zone.captureProgress >= 1) {
-            zone.ownerPlayerId = contenderId;
-            zone.capturingPlayerId = null;
-            zone.captureProgress = 0;
-
-            const owner = this.players.get(contenderId);
-            if (owner) {
-              this.awardXp(owner, zone.captureBonusXp, tick);
-            }
-
-            capturedZoneIds.push(zone.id);
-          }
-        }
-      } else if (contenderIds.length === 0) {
-        zone.contested = false;
-      }
-
-      if (
-        previousOwner !== zone.ownerPlayerId ||
-        previousCapturePlayer !== zone.capturingPlayerId ||
-        Math.abs(previousProgress - zone.captureProgress) > 0.0001 ||
-        previousContested !== zone.contested
-      ) {
-        zone.updatedAtTick = tick;
-      }
-    }
-
-    for (const zoneId of capturedZoneIds) {
-      this.destroyZone(zoneId);
-    }
-  }
-
-  private spawnControlZone(tick: number): boolean {
-    const minX = CONTROL_ZONE_SPAWN_MARGIN;
-    const maxX = WORLD_WIDTH - CONTROL_ZONE_SPAWN_MARGIN;
-    const minY = CONTROL_ZONE_SPAWN_MARGIN;
-    const maxY = WORLD_HEIGHT - CONTROL_ZONE_SPAWN_MARGIN;
-
-    for (let attempt = 0; attempt < CONTROL_ZONE_SPAWN_ATTEMPTS; attempt += 1) {
-      const x = minX + Math.random() * Math.max(1, maxX - minX);
-      const y = minY + Math.random() * Math.max(1, maxY - minY);
-
-      if (this.hasZoneSpawnCollision(x, y, CONTROL_ZONE_BASE_CONFIG.radius)) {
-        continue;
-      }
-
-      const id = `zone:${this.nextZoneSequence}`;
-      this.nextZoneSequence += 1;
-      this.zones.set(id, {
-        id,
-        x,
-        y,
-        radius: CONTROL_ZONE_BASE_CONFIG.radius,
-        ownerPlayerId: null,
-        capturingPlayerId: null,
-        captureProgress: 0,
-        contested: false,
-        xpPerSecond: CONTROL_ZONE_BASE_CONFIG.xpPerSecond,
-        captureBonusXp: CONTROL_ZONE_BASE_CONFIG.captureBonusXp,
-        updatedAtTick: tick
-      });
-      this.removedZones.delete(id);
-      return true;
-    }
-
-    const fallbackId = `zone:${this.nextZoneSequence}`;
-    this.nextZoneSequence += 1;
-    this.zones.set(fallbackId, {
-      id: fallbackId,
-      x: WORLD_WIDTH * 0.5,
-      y: WORLD_HEIGHT * 0.5,
-      radius: CONTROL_ZONE_BASE_CONFIG.radius,
-      ownerPlayerId: null,
-      capturingPlayerId: null,
-      captureProgress: 0,
-      contested: false,
-      xpPerSecond: CONTROL_ZONE_BASE_CONFIG.xpPerSecond,
-      captureBonusXp: CONTROL_ZONE_BASE_CONFIG.captureBonusXp,
-      updatedAtTick: tick
-    });
-    this.removedZones.delete(fallbackId);
-    return true;
-  }
-
-  private hasZoneSpawnCollision(x: number, y: number, radius: number): boolean {
-    for (const player of this.players.values()) {
-      const dx = player.x - x;
-      const dy = player.y - y;
-      const minDistance = player.radius + radius + 70;
-      if (dx * dx + dy * dy < minDistance * minDistance) {
-        return true;
-      }
-    }
-
-    for (const shape of this.shapes.values()) {
-      const dx = shape.x - x;
-      const dy = shape.y - y;
-      const minDistance = shape.radius + radius + 40;
-      if (dx * dx + dy * dy < minDistance * minDistance) {
-        return true;
-      }
-    }
-
-    for (const powerUp of this.powerUps.values()) {
-      const dx = powerUp.x - x;
-      const dy = powerUp.y - y;
-      const minDistance = powerUp.radius + radius + 40;
-      if (dx * dx + dy * dy < minDistance * minDistance) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private destroyZone(id: string): void {
-    if (!this.zones.delete(id)) {
-      return;
-    }
-
-    this.removedZones.add(id);
-  }
-
-  private updatePowerUps(_dtSeconds: number, tick: number, nowMs: number): void {
-    for (const [powerUpId, powerUp] of this.powerUps.entries()) {
-      if (nowMs >= powerUp.expiresAtMs) {
-        this.destroyPowerUp(powerUpId);
-      }
-    }
-
-    if (this.powerUps.size < POWER_UP_MAX_ACTIVE && nowMs - this.lastPowerUpSpawnAtMs >= POWER_UP_SPAWN_INTERVAL_MS) {
-      if (this.spawnPowerUp(tick, nowMs)) {
-        this.lastPowerUpSpawnAtMs = nowMs;
-      }
-    }
-
-    if (this.powerUps.size === 0) {
-      return;
-    }
-
-    for (const player of this.players.values()) {
-      if (player.hp <= 0 || this.isPendingRespawn(player.id, nowMs)) {
-        continue;
-      }
-
-      for (const powerUp of this.powerUps.values()) {
-        const dx = player.x - powerUp.x;
-        const dy = player.y - powerUp.y;
-        const combinedRadius = player.radius + powerUp.radius + POWER_UP_PLAYER_COLLISION_EXTRA;
-        if (dx * dx + dy * dy > combinedRadius * combinedRadius) {
-          continue;
-        }
-
-        this.applyPowerUp(player, powerUp.type, nowMs, tick);
-        this.destroyPowerUp(powerUp.id);
-      }
-    }
-  }
-
-  private pickPowerUpType(): BuffTypeValue {
-    const entries = [
-      [BuffType.Damage, POWER_UP_TYPE_WEIGHTS.damage],
-      [BuffType.Reload, POWER_UP_TYPE_WEIGHTS.reload],
-      [BuffType.Movement, POWER_UP_TYPE_WEIGHTS.movement]
-    ] as const;
-
-    const totalWeight = entries.reduce((sum, [, weight]) => sum + weight, 0);
-    let roll = Math.random() * totalWeight;
-    for (const [type, weight] of entries) {
-      roll -= weight;
-      if (roll <= 0) {
-        return type;
-      }
-    }
-
-    return BuffType.Damage;
-  }
-
-  private spawnPowerUp(tick: number, nowMs: number): boolean {
-    const minX = SAFE_SPAWN_MARGIN;
-    const maxX = WORLD_WIDTH - SAFE_SPAWN_MARGIN;
-    const minY = SAFE_SPAWN_MARGIN;
-    const maxY = WORLD_HEIGHT - SAFE_SPAWN_MARGIN;
-
-    for (let attempt = 0; attempt < POWER_UP_SPAWN_ATTEMPTS; attempt += 1) {
-      const x = minX + Math.random() * (maxX - minX);
-      const y = minY + Math.random() * (maxY - minY);
-
-      if (this.hasPowerUpSpawnCollision(x, y, POWER_UP_RADIUS)) {
-        continue;
-      }
-
-      const id = `powerup:${this.nextPowerUpSequence}`;
-      this.nextPowerUpSequence += 1;
-      this.powerUps.set(id, {
-        id,
-        type: this.pickPowerUpType(),
-        x,
-        y,
-        radius: POWER_UP_RADIUS,
-        expiresAtMs: nowMs + POWER_UP_TTL_MS,
-        updatedAtTick: tick
-      });
-      this.removedPowerUps.delete(id);
-      return true;
-    }
-
-    return false;
-  }
-
-  private hasPowerUpSpawnCollision(x: number, y: number, radius: number): boolean {
-    for (const player of this.players.values()) {
-      const dx = player.x - x;
-      const dy = player.y - y;
-      const minDistance = player.radius + radius + POWER_UP_SPAWN_PLAYER_SAFE_DISTANCE;
-      if (dx * dx + dy * dy < minDistance * minDistance) {
-        return true;
-      }
-    }
-
-    for (const shape of this.shapes.values()) {
-      const dx = shape.x - x;
-      const dy = shape.y - y;
-      const minDistance = shape.radius + radius + POWER_UP_SHAPE_SAFE_DISTANCE;
-      if (dx * dx + dy * dy < minDistance * minDistance) {
-        return true;
-      }
-    }
-
-    for (const existing of this.powerUps.values()) {
-      const dx = existing.x - x;
-      const dy = existing.y - y;
-      const minDistance = existing.radius + radius + 40;
-      if (dx * dx + dy * dy < minDistance * minDistance) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private destroyPowerUp(id: string): void {
-    if (!this.powerUps.delete(id)) {
-      return;
-    }
-
-    this.removedPowerUps.add(id);
-  }
-
   private applyPowerUp(player: PlayerEntity, buffType: BuffTypeValue, nowMs: number, tick: number): void {
     const activeBuff = player.activeBuffs.find((buff) => buff.type === buffType);
     if (activeBuff) {
@@ -2027,19 +1744,26 @@ export class World {
   }
 
   private collectNearbyShapes(x: number, y: number, out: ShapeEntity[]): void {
-    const maxRadius = 48;
-    for (const shape of this.shapes.values()) {
-      if (Math.abs(shape.x - x) > shape.radius + maxRadius || Math.abs(shape.y - y) > shape.radius + maxRadius) {
-        continue;
+    this.nearbyShapeIdsBuffer.length = 0;
+    this.shapeGrid.queryNearbyInto(x, y, this.nearbyShapeIdsBuffer);
+    for (const id of this.nearbyShapeIdsBuffer) {
+      const shape = this.shapes.get(id);
+      if (shape) {
+        out.push(shape);
       }
-      out.push(shape);
     }
   }
 
   private resolvePlayerShapeOverlaps(player: PlayerEntity): void {
     for (let pass = 0; pass < PLAYER_SHAPE_COLLISION_PASSES; pass += 1) {
       let moved = false;
-      for (const shape of this.shapes.values()) {
+      this.nearbyShapeIdsBuffer.length = 0;
+      this.shapeGrid.queryNearbyInto(player.x, player.y, this.nearbyShapeIdsBuffer);
+      for (const shapeId of this.nearbyShapeIdsBuffer) {
+        const shape = this.shapes.get(shapeId);
+        if (!shape) {
+          continue;
+        }
         const dx = player.x - shape.x;
         const dy = player.y - shape.y;
         const combinedRadius = player.radius + shape.radius;
@@ -2285,14 +2009,16 @@ export class World {
 
   private destroyAllPowerUps(): void {
     for (const powerUpId of this.powerUps.keys()) {
-      this.destroyPowerUp(powerUpId);
+      this.removedPowerUps.add(powerUpId);
     }
+    this.powerUps.clear();
   }
 
   private destroyAllZones(): void {
     for (const zoneId of this.zones.keys()) {
-      this.destroyZone(zoneId);
+      this.removedZones.add(zoneId);
     }
+    this.zones.clear();
   }
 
   private endRound(winnerPlayerId: string | null, tick: number, nowMs: number): void {
@@ -2357,8 +2083,8 @@ export class World {
     this.destroyAllBullets();
     this.destroyAllZones();
     this.destroyAllPowerUps();
-    this.lastZoneSpawnAtMs = nowMs - CONTROL_ZONE_SPAWN_INTERVAL_MS;
-    this.lastPowerUpSpawnAtMs = nowMs;
+    this.zoneSystem.resetSpawnClock(nowMs);
+    this.powerUpSystem.resetSpawnClock(nowMs);
 
     for (const player of this.players.values()) {
       this.playerKills.set(player.id, 0);

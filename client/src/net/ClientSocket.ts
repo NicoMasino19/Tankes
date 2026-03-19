@@ -98,8 +98,12 @@ export class ClientSocket {
     });
 
     socket.on(SocketEvents.WorldUpdate, (payload: ArrayBuffer | Uint8Array) => {
-      const delta = this.codec.decodeWorldUpdate(payload);
-      this.options.onWorldDelta(delta);
+      try {
+        const delta = this.codec.decodeWorldUpdate(payload);
+        this.options.onWorldDelta(delta);
+      } catch {
+        // Malformed snapshot — drop frame silently
+      }
     });
 
     socket.on(SocketEvents.RoundEnded, (payload: RoundEndedPayload) => {

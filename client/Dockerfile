@@ -23,4 +23,7 @@ FROM nginx:1.27-alpine AS runtime
 COPY client/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/client/dist /usr/share/nginx/html
 
+RUN chown -R nginx:nginx /usr/share/nginx/html
+USER nginx
+
 EXPOSE 80
