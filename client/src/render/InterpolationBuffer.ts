@@ -74,7 +74,7 @@ export class InterpolationBuffer {
     return this.ring[(this.head + index) % RING_CAPACITY] ?? null;
   }
 
-  getInterpolated(): InterpolatedWorld {
+  getInterpolated(localPlayerId?: string | null): InterpolatedWorld {
     const firstEntry = this.at(0);
     if (!firstEntry) {
       return {
