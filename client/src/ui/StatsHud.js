@@ -1,4 +1,4 @@
-import { ABILITY_DEFINITIONS, ABILITY_UNLOCK_LEVELS, AbilitySlot, getXpRequiredForLevel, MatchPhase, MatchWinCondition, STAT_KEYS, STAT_MAX_LEVEL } from "@tankes/shared";
+import { ABILITY_DEFINITIONS, ABILITY_UNLOCK_LEVELS, AbilitySlot, getXpRequiredForLevel, MatchPhase, MatchWinCondition, STAT_KEYS, STAT_MAX_LEVEL, escapeHtml } from "@tankes/shared";
 const formatSeconds = (milliseconds) => {
     const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
     const minutes = Math.floor(totalSeconds / 60)
@@ -220,47 +220,23 @@ export class StatsHud {
     constructor(onUpgrade, onChooseAbility, audioOptions) {
         this.element = document.createElement("div");
         this.element.className = "pointer-events-none absolute inset-0 z-10 text-sm";
+        this.initRoundPanel();
+        this.initStatsPanel(onUpgrade);
+        this.initPlayerPanel();
+        this.initAbilitiesPanel();
+        this.initPauseMenu(audioOptions);
+        this.initAbilityOfferPanel(onChooseAbility);
+        this.initOverlays();
+        this.element.append(this.menuButton, this.roundPanel, this.statsPanel, this.abilitiesPanel, this.playerPanel, this.pauseMenuBackdrop, this.pauseMenuPanel, this.abilityOfferPanel, this.abilityRejectToast, this.tooltipPanel, this.resultOverlay, this.respawnOverlay, this.scoreboardText);
+        this.setAudioState(audioOptions.initialState);
+    }
+    dispose() {
+        this.element.remove();
+    }
+    initRoundPanel() {
         this.roundPanel = document.createElement("div");
         this.roundPanel.className =
             "hud-card hud-round-panel pointer-events-auto absolute right-4 top-4 z-10 w-80 rounded-2xl border border-slate-700/80 bg-slate-900/92 p-4 shadow-2xl";
-        this.statsPanel = document.createElement("div");
-        this.statsPanel.className =
-            "hud-card hud-stats-panel pointer-events-auto absolute bottom-4 left-4 z-10 w-80 rounded-2xl border border-slate-700/80 bg-slate-900/92 p-4 shadow-2xl";
-        this.playerPanel = document.createElement("div");
-        this.playerPanel.className =
-            "hud-card hud-player-panel pointer-events-none absolute bottom-4 left-1/2 z-10 w-[30rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-2xl border border-slate-700/80 bg-slate-900/92 px-5 py-3 shadow-2xl";
-        this.abilitiesPanel = document.createElement("div");
-        this.abilitiesPanel.className =
-            "hud-card hud-abilities-panel pointer-events-auto absolute bottom-4 right-4 z-10 w-80 rounded-2xl border border-slate-700/80 bg-slate-900/92 p-4 shadow-2xl";
-        this.menuButton = document.createElement("button");
-        this.menuButton.className =
-            "hud-card hud-menu-button pointer-events-auto absolute left-4 top-4 z-20 rounded-xl border border-slate-700/80 bg-slate-900/92 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-100";
-        this.menuButton.innerHTML = '<span class="text-cyan-200">ESC</span> Menu';
-        this.menuButton.addEventListener("click", () => this.togglePauseMenu());
-        this.pauseMenuBackdrop = document.createElement("div");
-        this.pauseMenuBackdrop.className = "absolute inset-0 z-30 hidden bg-slate-950/55";
-        this.pauseMenuBackdrop.addEventListener("click", () => this.togglePauseMenu(false));
-        this.pauseMenuPanel = document.createElement("div");
-        this.pauseMenuPanel.className =
-            "hud-card hud-pause-panel pointer-events-auto absolute left-1/2 top-1/2 z-40 hidden w-[34rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-700/80 bg-slate-900/96 p-5 shadow-2xl";
-        this.pauseMenuPanel.addEventListener("click", (event) => event.stopPropagation());
-        this.pauseMenuTabs = document.createElement("div");
-        this.pauseMenuTabs.className = "mt-4 flex flex-wrap gap-2";
-        this.abilityOfferPanel = document.createElement("div");
-        this.abilityOfferPanel.className =
-            "hud-card hud-offer-panel pointer-events-auto absolute left-4 top-28 z-20 hidden w-80 rounded-2xl border border-cyan-600/80 bg-slate-900/95 p-4 shadow-2xl";
-        this.abilityOfferTitle = document.createElement("h3");
-        this.abilityOfferTitle.className = "text-sm font-semibold text-cyan-100";
-        this.abilityOfferTitle.textContent = "Choose ability";
-        this.abilityOfferList = document.createElement("div");
-        this.abilityOfferList.className = "mt-3 space-y-2";
-        this.abilityOfferPanel.append(this.abilityOfferTitle, this.abilityOfferList);
-        this.abilityRejectToast = document.createElement("div");
-        this.abilityRejectToast.className =
-            "hud-toast-panel pointer-events-none absolute left-1/2 top-16 z-20 hidden -translate-x-1/2 rounded-md border border-rose-700 bg-slate-950/95 px-4 py-2 text-xs font-semibold text-rose-200";
-        this.tooltipPanel = document.createElement("div");
-        this.tooltipPanel.className =
-            "pointer-events-none fixed z-50 hidden max-w-[220px] -translate-y-full rounded-lg border border-slate-700 bg-slate-950/95 px-3 py-2 text-xs text-slate-200 shadow-2xl";
         const title = document.createElement("h2");
         title.className = "text-base font-semibold text-slate-100";
         title.textContent = "Round";
@@ -279,6 +255,12 @@ export class StatsHud {
         this.scoreboardList = document.createElement("div");
         this.scoreboardList.className =
             "hud-scrollbar mt-2 max-h-60 overflow-y-auto rounded-md border border-slate-800 bg-slate-950/70 px-2 py-2 text-xs text-slate-300";
+        this.roundPanel.append(title, this.phaseText, this.objectiveText, this.timerText, this.pingText, scoreboardTitle, this.scoreboardList);
+    }
+    initStatsPanel(onUpgrade) {
+        this.statsPanel = document.createElement("div");
+        this.statsPanel.className =
+            "hud-card hud-stats-panel pointer-events-auto absolute bottom-4 left-4 z-10 w-80 rounded-2xl border border-slate-700/80 bg-slate-900/92 p-4 shadow-2xl";
         const statsTitle = document.createElement("h3");
         statsTitle.className = "text-base font-semibold text-slate-100";
         statsTitle.textContent = "Upgrades";
@@ -298,6 +280,116 @@ export class StatsHud {
                 '<span class="rounded bg-slate-800 px-1.5 py-0.5 font-black text-slate-300">LOCK</span><span>No points available</span>' +
                 '<span class="rounded bg-slate-700 px-1.5 py-0.5 font-black text-slate-200">MAX</span><span>Already capped</span>' +
                 '</div>';
+        this.statsPanel.append(statsTitle, statsSubtitle, this.levelText, this.pointsText, this.upgradeLegendText);
+        for (const key of STAT_KEYS) {
+            const row = document.createElement("button");
+            row.className =
+                "mb-2 flex w-full items-center justify-between rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-left hover:border-cyan-500";
+            this.wireUpgradeInteraction(row, () => onUpgrade(key));
+            this.bindTooltip(row, () => {
+                const meta = STAT_META[key];
+                const currentSelfPlayer = this.currentSelfPlayer;
+                const value = currentSelfPlayer?.stats[key];
+                const nextLevel = typeof value === "number" ? Math.min(STAT_MAX_LEVEL, value + 1) : null;
+                if (value === undefined) {
+                    return `${meta.label}: ${meta.description}`;
+                }
+                if (value >= STAT_MAX_LEVEL) {
+                    return `${meta.label}: maxed at level ${STAT_MAX_LEVEL}. ${meta.description}`;
+                }
+                const canUpgrade = (currentSelfPlayer?.upgradePoints ?? 0) > 0;
+                return `${meta.label}: level ${value}/${STAT_MAX_LEVEL}. ${meta.description} ${canUpgrade ? `Spend a point to reach level ${nextLevel}.` : "Earn an upgrade point to increase this stat."}`;
+            });
+            this.rows.set(key, row);
+            this.statsPanel.append(row);
+        }
+    }
+    initPlayerPanel() {
+        this.playerPanel = document.createElement("div");
+        this.playerPanel.className =
+            "hud-card hud-player-panel pointer-events-none absolute bottom-4 left-1/2 z-10 w-[30rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-2xl border border-slate-700/80 bg-slate-900/92 px-5 py-3 shadow-2xl";
+        this.playerNameText = document.createElement("div");
+        this.playerNameText.className = "text-center text-4xl font-black leading-none tracking-tight text-slate-100";
+        this.playerMetaText = document.createElement("div");
+        this.playerMetaText.className = "mt-1 text-center text-sm font-semibold tracking-wide text-cyan-200";
+        this.playerHintText = document.createElement("div");
+        this.playerHintText.className =
+            "mt-2 text-center text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400";
+        this.xpLabelText = document.createElement("div");
+        this.xpLabelText.className = "mt-2 text-center text-xs font-medium text-slate-200";
+        this.buffsText = document.createElement("div");
+        this.buffsText.className = "mt-2 flex flex-wrap items-center justify-center gap-1 text-[11px]";
+        const xpBarTrack = document.createElement("div");
+        xpBarTrack.className = "mt-1 h-5 w-full overflow-hidden rounded-full border border-slate-700 bg-slate-950";
+        this.xpBarFill = document.createElement("div");
+        this.xpBarFill.className = "h-full rounded-full bg-gradient-to-r from-cyan-300 via-sky-400 to-cyan-500 transition-[width] duration-200";
+        this.xpBarFill.style.width = "0%";
+        xpBarTrack.append(this.xpBarFill);
+        this.playerPanel.append(this.playerNameText, this.playerMetaText, this.playerHintText, this.xpLabelText, this.buffsText, xpBarTrack);
+    }
+    initAbilitiesPanel() {
+        this.abilitiesPanel = document.createElement("div");
+        this.abilitiesPanel.className =
+            "hud-card hud-abilities-panel pointer-events-auto absolute bottom-4 right-4 z-10 w-80 rounded-2xl border border-slate-700/80 bg-slate-900/92 p-4 shadow-2xl";
+        const abilitiesTitle = document.createElement("h3");
+        abilitiesTitle.className = "text-base font-semibold text-slate-100";
+        abilitiesTitle.textContent = "Abilities (RMB / 1 / 2 / ULT)";
+        const abilitiesSubtitle = document.createElement("div");
+        abilitiesSubtitle.className = "mt-1 text-xs text-slate-400";
+        abilitiesSubtitle.textContent = "Each slot shows unlock state and cooldown readiness.";
+        const slotRows = [
+            { slot: AbilitySlot.RightClick, label: ABILITY_SLOT_LABEL[AbilitySlot.RightClick] },
+            { slot: AbilitySlot.Slot1, label: ABILITY_SLOT_LABEL[AbilitySlot.Slot1] },
+            { slot: AbilitySlot.Slot2, label: ABILITY_SLOT_LABEL[AbilitySlot.Slot2] },
+            { slot: AbilitySlot.Ultimate, label: ABILITY_SLOT_LABEL[AbilitySlot.Ultimate] }
+        ];
+        this.abilitiesPanel.append(abilitiesTitle, abilitiesSubtitle);
+        for (const slotRow of slotRows) {
+            const row = document.createElement("div");
+            row.className = "mt-2 rounded-xl border border-slate-700 bg-slate-950/95 px-3 py-2.5 text-xs text-slate-200 shadow-sm";
+            row.tabIndex = 0;
+            row.textContent = `${slotRow.label}: --`;
+            this.bindTooltip(row, () => {
+                const currentSelfPlayer = this.currentSelfPlayer;
+                const abilityId = currentSelfPlayer?.abilityRuntime?.loadout?.[slotRow.slot];
+                if (!currentSelfPlayer) {
+                    return `${slotRow.label}: no player data yet.`;
+                }
+                if (!abilityId) {
+                    const unlockLevel = ABILITY_UNLOCK_LEVELS[slotRow.slot];
+                    return currentSelfPlayer.level >= unlockLevel
+                        ? `${slotRow.label}: slot unlocked. Wait for an ability offer to assign a power.`
+                        : `${slotRow.label}: unlocks at level ${unlockLevel}. Keep leveling to open this slot.`;
+                }
+                const ability = ABILITY_DEFINITIONS[abilityId];
+                return `${ability.name}: ${ability.description}`;
+            });
+            this.abilitySlotText.set(slotRow.slot, row);
+            this.abilitiesPanel.append(row);
+        }
+    }
+    initPauseMenu(audioOptions) {
+        this.menuButton = document.createElement("button");
+        this.menuButton.className =
+            "hud-card hud-menu-button pointer-events-auto absolute left-4 top-4 z-20 rounded-xl border border-slate-700/80 bg-slate-900/92 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-100";
+        this.menuButton.innerHTML = '<span class="text-cyan-200">ESC</span> Menu';
+        this.menuButton.addEventListener("click", () => this.togglePauseMenu());
+        this.pauseMenuBackdrop = document.createElement("div");
+        this.pauseMenuBackdrop.className = "absolute inset-0 z-30 hidden bg-slate-950/55";
+        this.pauseMenuBackdrop.addEventListener("click", () => this.togglePauseMenu(false));
+        this.pauseMenuPanel = document.createElement("div");
+        this.pauseMenuPanel.className =
+            "hud-card hud-pause-panel pointer-events-auto absolute left-1/2 top-1/2 z-40 hidden w-[34rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-700/80 bg-slate-900/96 p-5 shadow-2xl";
+        this.pauseMenuPanel.addEventListener("click", (event) => event.stopPropagation());
+        this.pauseMenuTabs = document.createElement("div");
+        this.pauseMenuTabs.className = "mt-4 flex flex-wrap gap-2";
+        const pauseTitle = document.createElement("div");
+        pauseTitle.className = "flex items-center justify-between gap-3";
+        pauseTitle.innerHTML =
+            '<div><div class="text-lg font-black tracking-tight text-slate-100">Combat Menu</div><div class="mt-1 text-xs text-slate-400">The match keeps running while this panel is open.</div></div>' +
+                '<button class="rounded-md border border-slate-700 bg-slate-950 px-3 py-1 text-xs font-semibold text-slate-200">Close</button>';
+        const closeButton = pauseTitle.querySelector("button");
+        closeButton?.addEventListener("click", () => this.togglePauseMenu(false));
         const audioTitle = document.createElement("h3");
         audioTitle.className = "text-xs font-semibold uppercase tracking-wide text-slate-300";
         audioTitle.textContent = "Audio";
@@ -318,13 +410,6 @@ export class StatsHud {
             audioOptions.onVolumeChange(nextVolume);
         });
         audioRow.append(this.muteButton, this.volumeInput);
-        const pauseTitle = document.createElement("div");
-        pauseTitle.className = "flex items-center justify-between gap-3";
-        pauseTitle.innerHTML =
-            '<div><div class="text-lg font-black tracking-tight text-slate-100">Combat Menu</div><div class="mt-1 text-xs text-slate-400">The match keeps running while this panel is open.</div></div>' +
-                '<button class="rounded-md border border-slate-700 bg-slate-950 px-3 py-1 text-xs font-semibold text-slate-200">Close</button>';
-        const closeButton = pauseTitle.querySelector("button");
-        closeButton?.addEventListener("click", () => this.togglePauseMenu(false));
         const controlsPanel = document.createElement("div");
         controlsPanel.className = "mt-4 grid grid-cols-2 gap-2 text-xs";
         controlsPanel.innerHTML =
@@ -371,89 +456,20 @@ export class StatsHud {
         }
         this.pauseMenuPanel.append(pauseTitle, this.pauseMenuTabs, controlsSection, audioSection, hudSection);
         this.setPauseTab(this.activePauseTab);
-        this.playerNameText = document.createElement("div");
-        this.playerNameText.className = "text-center text-4xl font-black leading-none tracking-tight text-slate-100";
-        this.playerMetaText = document.createElement("div");
-        this.playerMetaText.className = "mt-1 text-center text-sm font-semibold tracking-wide text-cyan-200";
-        this.playerHintText = document.createElement("div");
-        this.playerHintText.className =
-            "mt-2 text-center text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400";
-        this.xpLabelText = document.createElement("div");
-        this.xpLabelText.className = "mt-2 text-center text-xs font-medium text-slate-200";
-        this.buffsText = document.createElement("div");
-        this.buffsText.className = "mt-2 flex flex-wrap items-center justify-center gap-1 text-[11px]";
-        const xpBarTrack = document.createElement("div");
-        xpBarTrack.className = "mt-1 h-5 w-full overflow-hidden rounded-full border border-slate-700 bg-slate-950";
-        this.xpBarFill = document.createElement("div");
-        this.xpBarFill.className = "h-full rounded-full bg-gradient-to-r from-cyan-300 via-sky-400 to-cyan-500 transition-[width] duration-200";
-        this.xpBarFill.style.width = "0%";
-        xpBarTrack.append(this.xpBarFill);
-        this.resultOverlay = document.createElement("div");
-        this.resultOverlay.className =
-            "hud-result-overlay pointer-events-none absolute inset-x-4 top-20 z-20 hidden rounded-md border border-slate-700 bg-slate-950/95 px-3 py-2 text-center text-xs text-slate-100";
-        this.respawnOverlay = document.createElement("div");
-        this.respawnOverlay.className =
-            "hud-respawn-overlay pointer-events-none absolute left-1/2 top-1/2 z-20 hidden -translate-x-1/2 -translate-y-1/2 rounded-md border border-cyan-700 bg-slate-950/95 px-4 py-2 text-sm font-semibold text-cyan-200";
-        this.roundPanel.append(title, this.phaseText, this.objectiveText, this.timerText, this.pingText, scoreboardTitle, this.scoreboardList);
-        this.statsPanel.append(statsTitle, statsSubtitle, this.levelText, this.pointsText, this.upgradeLegendText);
-        const abilitiesTitle = document.createElement("h3");
-        abilitiesTitle.className = "text-base font-semibold text-slate-100";
-        abilitiesTitle.textContent = "Abilities (RMB / 1 / 2 / ULT)";
-        const abilitiesSubtitle = document.createElement("div");
-        abilitiesSubtitle.className = "mt-1 text-xs text-slate-400";
-        abilitiesSubtitle.textContent = "Each slot shows unlock state and cooldown readiness.";
-        const slotRows = [
-            { slot: AbilitySlot.RightClick, label: ABILITY_SLOT_LABEL[AbilitySlot.RightClick] },
-            { slot: AbilitySlot.Slot1, label: ABILITY_SLOT_LABEL[AbilitySlot.Slot1] },
-            { slot: AbilitySlot.Slot2, label: ABILITY_SLOT_LABEL[AbilitySlot.Slot2] },
-            { slot: AbilitySlot.Ultimate, label: ABILITY_SLOT_LABEL[AbilitySlot.Ultimate] }
-        ];
-        this.abilitiesPanel.append(abilitiesTitle, abilitiesSubtitle);
-        for (const slotRow of slotRows) {
-            const row = document.createElement("div");
-            row.className = "mt-2 rounded-xl border border-slate-700 bg-slate-950/95 px-3 py-2.5 text-xs text-slate-200 shadow-sm";
-            row.tabIndex = 0;
-            row.textContent = `${slotRow.label}: --`;
-            this.bindTooltip(row, () => {
-                const currentSelfPlayer = this.currentSelfPlayer;
-                const abilityId = currentSelfPlayer?.abilityRuntime?.loadout?.[slotRow.slot];
-                if (!currentSelfPlayer) {
-                    return `${slotRow.label}: no player data yet.`;
-                }
-                if (!abilityId) {
-                    const unlockLevel = ABILITY_UNLOCK_LEVELS[slotRow.slot];
-                    return currentSelfPlayer.level >= unlockLevel
-                        ? `${slotRow.label}: slot unlocked. Wait for an ability offer to assign a power.`
-                        : `${slotRow.label}: unlocks at level ${unlockLevel}. Keep leveling to open this slot.`;
-                }
-                const ability = ABILITY_DEFINITIONS[abilityId];
-                return `${ability.name}: ${ability.description}`;
-            });
-            this.abilitySlotText.set(slotRow.slot, row);
-            this.abilitiesPanel.append(row);
-        }
-        for (const key of STAT_KEYS) {
-            const row = document.createElement("button");
-            row.className =
-                "mb-2 flex w-full items-center justify-between rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-left hover:border-cyan-500";
-            this.wireUpgradeInteraction(row, () => onUpgrade(key));
-            this.bindTooltip(row, () => {
-                const meta = STAT_META[key];
-                const currentSelfPlayer = this.currentSelfPlayer;
-                const value = currentSelfPlayer?.stats[key];
-                const nextLevel = typeof value === "number" ? Math.min(STAT_MAX_LEVEL, value + 1) : null;
-                if (value === undefined) {
-                    return `${meta.label}: ${meta.description}`;
-                }
-                if (value >= STAT_MAX_LEVEL) {
-                    return `${meta.label}: maxed at level ${STAT_MAX_LEVEL}. ${meta.description}`;
-                }
-                const canUpgrade = (currentSelfPlayer?.upgradePoints ?? 0) > 0;
-                return `${meta.label}: level ${value}/${STAT_MAX_LEVEL}. ${meta.description} ${canUpgrade ? `Spend a point to reach level ${nextLevel}.` : "Earn an upgrade point to increase this stat."}`;
-            });
-            this.rows.set(key, row);
-            this.statsPanel.append(row);
-        }
+    }
+    initAbilityOfferPanel(onChooseAbility) {
+        this.abilityOfferPanel = document.createElement("div");
+        this.abilityOfferPanel.className =
+            "hud-card hud-offer-panel pointer-events-auto absolute left-4 top-28 z-20 hidden w-80 rounded-2xl border border-cyan-600/80 bg-slate-900/95 p-4 shadow-2xl";
+        this.abilityOfferTitle = document.createElement("h3");
+        this.abilityOfferTitle.className = "text-sm font-semibold text-cyan-100";
+        this.abilityOfferTitle.textContent = "Choose ability";
+        this.abilityOfferList = document.createElement("div");
+        this.abilityOfferList.className = "mt-3 space-y-2";
+        this.abilityOfferPanel.append(this.abilityOfferTitle, this.abilityOfferList);
+        this.abilityRejectToast = document.createElement("div");
+        this.abilityRejectToast.className =
+            "hud-toast-panel pointer-events-none absolute left-1/2 top-16 z-20 hidden -translate-x-1/2 rounded-md border border-rose-700 bg-slate-950/95 px-4 py-2 text-xs font-semibold text-rose-200";
         const renderAbilityOffer = (offer) => {
             this.pendingAbilityOffer = offer;
             this.abilityOfferList.innerHTML = "";
@@ -479,11 +495,19 @@ export class StatsHud {
             this.replayAnimationClass(this.abilityOfferPanel, "hud-enter");
         };
         this.setAbilityOffer = renderAbilityOffer;
+    }
+    initOverlays() {
+        this.tooltipPanel = document.createElement("div");
+        this.tooltipPanel.className =
+            "pointer-events-none fixed z-50 hidden max-w-[220px] -translate-y-full rounded-lg border border-slate-700 bg-slate-950/95 px-3 py-2 text-xs text-slate-200 shadow-2xl";
+        this.resultOverlay = document.createElement("div");
+        this.resultOverlay.className =
+            "hud-result-overlay pointer-events-none absolute inset-x-4 top-20 z-20 hidden rounded-md border border-slate-700 bg-slate-950/95 px-3 py-2 text-center text-xs text-slate-100";
+        this.respawnOverlay = document.createElement("div");
+        this.respawnOverlay.className =
+            "hud-respawn-overlay pointer-events-none absolute left-1/2 top-1/2 z-20 hidden -translate-x-1/2 -translate-y-1/2 rounded-md border border-cyan-700 bg-slate-950/95 px-4 py-2 text-sm font-semibold text-cyan-200";
         this.scoreboardText = document.createElement("div");
         this.scoreboardText.className = "hidden";
-        this.playerPanel.append(this.playerNameText, this.playerMetaText, this.playerHintText, this.xpLabelText, this.buffsText, xpBarTrack);
-        this.element.append(this.menuButton, this.roundPanel, this.statsPanel, this.abilitiesPanel, this.playerPanel, this.pauseMenuBackdrop, this.pauseMenuPanel, this.abilityOfferPanel, this.abilityRejectToast, this.tooltipPanel, this.resultOverlay, this.respawnOverlay, this.scoreboardText);
-        this.setAudioState(audioOptions.initialState);
     }
     setAudioState(state) {
         this.muteButton.textContent = state.muted ? "Unmute" : "Mute";
@@ -508,7 +532,7 @@ export class StatsHud {
         const lines = scores.slice(0, 10).map((entry, index) => {
             const isSelf = selfId !== null && entry.playerId === selfId;
             const rankClass = index === 0 ? "text-amber-200" : index === 1 ? "text-slate-200" : "text-orange-200";
-            return `<div class="mb-1 flex items-center justify-between rounded px-2 py-1 ${isSelf ? "bg-cyan-900/40 ring-1 ring-cyan-500/60" : "bg-slate-950/40"}"><span class="font-semibold ${rankClass}">#${index + 1}</span><span class="mx-2 flex-1 truncate ${isSelf ? "text-cyan-100" : "text-slate-200"}">${entry.name}</span><span class="text-slate-300">K:${entry.kills} D:${entry.deaths}</span></div>`;
+            return `<div class="mb-1 flex items-center justify-between rounded px-2 py-1 ${isSelf ? "bg-cyan-900/40 ring-1 ring-cyan-500/60" : "bg-slate-950/40"}"><span class="font-semibold ${rankClass}">#${index + 1}</span><span class="mx-2 flex-1 truncate ${isSelf ? "text-cyan-100" : "text-slate-200"}">${escapeHtml(entry.name)}</span><span class="text-slate-300">K:${entry.kills} D:${entry.deaths}</span></div>`;
         });
         return lines.length > 0 ? lines.join("") : "Waiting for players...";
     }
@@ -546,8 +570,8 @@ export class StatsHud {
         const winnerId = result?.winnerPlayerId ?? session.roundWinnerPlayerId;
         const winner = session.scoreboard.find((entry) => entry.playerId === winnerId)?.name ?? "--";
         const top = (result?.scoreboard ?? session.scoreboard).slice(0, 3);
-        const lines = top.map((entry, index) => `${index + 1}. ${entry.name} K:${entry.kills} D:${entry.deaths}`);
-        this.resultOverlay.innerHTML = `Winner: ${winner}<br>${lines.length > 0 ? lines.join("<br>") : "Top 3: --"}`;
+        const lines = top.map((entry, index) => `${index + 1}. ${escapeHtml(entry.name)} K:${entry.kills} D:${entry.deaths}`);
+        this.resultOverlay.innerHTML = `Winner: ${escapeHtml(winner)}<br>${lines.length > 0 ? lines.join("<br>") : "Top 3: --"}`;
         this.resultOverlay.classList.remove("hidden");
         this.replayAnimationClass(this.resultOverlay, "hud-enter");
     }

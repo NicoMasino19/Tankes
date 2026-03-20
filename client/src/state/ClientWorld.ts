@@ -55,8 +55,10 @@ export class ClientWorld {
   private session: MatchState | null = null;
   private tick = 0;
   private serverTime = 0;
+  private cachedSnapshot: WorldState | null = null;
 
   applyDelta(delta: WorldDeltaSnapshot): WorldState {
+    this.cachedSnapshot = null;
     this.tick = delta.tick;
     this.serverTime = delta.serverTime;
     this.lastAbilityVfxCues = delta.abilityVfxCues ? [...delta.abilityVfxCues] : [];
@@ -103,7 +105,8 @@ export class ClientWorld {
   }
 
   getSnapshot(): WorldState {
-    return {
+    if (this.cachedSnapshot) return this.cachedSnapshot;
+    this.cachedSnapshot = {
       tick: this.tick,
       serverTime: this.serverTime,
       abilityVfxCues: [...this.lastAbilityVfxCues],
@@ -114,5 +117,6 @@ export class ClientWorld {
       zones: cloneMap(this.zones),
       powerUps: cloneMap(this.powerUps)
     };
+    return this.cachedSnapshot;
   }
 }

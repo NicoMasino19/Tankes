@@ -1,5 +1,6 @@
 import { decode, encode } from "@msgpack/msgpack";
 import type { WorldDeltaSnapshot } from "./snapshot";
+import { validateWorldDelta } from "./validateSnapshot";
 
 export const NetworkCodecMode = {
   MsgPack: "msgpack",
@@ -20,7 +21,7 @@ export class MsgPackCodec implements NetworkCodec {
 
   decodeWorldUpdate(payload: ArrayBuffer | Uint8Array): WorldDeltaSnapshot {
     const input = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
-    return decode(input) as WorldDeltaSnapshot;
+    return validateWorldDelta(decode(input));
   }
 }
 
@@ -31,7 +32,7 @@ export class JsonCodec implements NetworkCodec {
 
   decodeWorldUpdate(payload: ArrayBuffer | Uint8Array): WorldDeltaSnapshot {
     const input = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
-    return JSON.parse(new TextDecoder().decode(input)) as WorldDeltaSnapshot;
+    return validateWorldDelta(JSON.parse(new TextDecoder().decode(input)));
   }
 }
 

@@ -24,6 +24,9 @@ const sfx = new SfxManager();
 const REMOTE_AUDIO_NEAR_DISTANCE = 180;
 const REMOTE_AUDIO_FAR_DISTANCE = 1100;
 const REMOTE_AUDIO_SMOOTHING = 0.22;
+const REMOTE_AUDIO_MIN_VOLUME = 0.01;
+const MAX_FRAME_DELTA_SECONDS = 0.1;
+const INPUT_TICK_RATE = 30;
 const remoteAudioMixByPlayerId = new Map();
 const smoothstep = (edge0, edge1, value) => {
     const t = Math.max(0, Math.min(1, (value - edge0) / Math.max(1, edge1 - edge0)));
@@ -111,7 +114,7 @@ const socketClient = new ClientSocket({
             if (event.type === GameplayEventType.Shot) {
                 const selfShot = event.playerId === selfId;
                 const volumeScale = getRemoteVolumeScale(event.playerId);
-                if (!selfShot && volumeScale <= 0.01) {
+                if (!selfShot && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
                     continue;
                 }
                 sfx.playShot(selfShot, volumeScale);
@@ -123,7 +126,7 @@ const socketClient = new ClientSocket({
             if (event.type === GameplayEventType.Damage) {
                 const selfDamage = event.playerId === selfId;
                 const volumeScale = getRemoteVolumeScale(event.playerId);
-                if (!selfDamage && volumeScale <= 0.01) {
+                if (!selfDamage && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
                     continue;
                 }
                 sfx.playHit(selfDamage, volumeScale);
@@ -135,7 +138,7 @@ const socketClient = new ClientSocket({
             if (event.type === GameplayEventType.Death) {
                 const selfDeath = event.playerId === selfId;
                 const volumeScale = getRemoteVolumeScale(event.playerId);
-                if (!selfDeath && volumeScale <= 0.01) {
+                if (!selfDeath && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
                     continue;
                 }
                 sfx.playDeath(selfDeath, volumeScale);
@@ -147,7 +150,7 @@ const socketClient = new ClientSocket({
             if (event.type === GameplayEventType.Respawn) {
                 const selfRespawn = event.playerId === selfId;
                 const volumeScale = getRemoteVolumeScale(event.playerId);
-                if (!selfRespawn && volumeScale <= 0.01) {
+                if (!selfRespawn && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
                     continue;
                 }
                 sfx.playRespawn(selfRespawn, volumeScale);
@@ -163,7 +166,7 @@ const socketClient = new ClientSocket({
             if (event.type === GameplayEventType.ZoneCapturing) {
                 const selfCapturing = event.playerId === selfId;
                 const volumeScale = getRemoteVolumeScale(event.playerId);
-                if (!selfCapturing && volumeScale <= 0.01) {
+                if (!selfCapturing && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
                     continue;
                 }
                 sfx.playZoneCapturing(selfCapturing, event.amount ?? 0, volumeScale);
@@ -176,7 +179,7 @@ const socketClient = new ClientSocket({
             if (event.type === GameplayEventType.ZoneCaptured) {
                 const selfCaptured = event.playerId === selfId;
                 const volumeScale = getRemoteVolumeScale(event.playerId);
-                if (!selfCaptured && volumeScale <= 0.01) {
+                if (!selfCaptured && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
                     continue;
                 }
                 sfx.playZoneCaptured(selfCaptured, volumeScale);
@@ -211,14 +214,14 @@ const input = new InputController(canvas);
 let accumulator = 0;
 let lastFrame = performance.now();
 const loop = (now) => {
-    const deltaSeconds = Math.min(0.1, (now - lastFrame) / 1000);
+    const deltaSeconds = Math.min(MAX_FRAME_DELTA_SECONDS, (now - lastFrame) / 1000);
     lastFrame = now;
     accumulator += deltaSeconds;
     latestInterpolated = interpolation.getInterpolated();
     renderer.render(latestInterpolated, selfId);
     const selfPlayer = latestInterpolated.players.find((player) => player.id === selfId);
     statsHud.update(selfPlayer, latestInterpolated.session, latestInterpolated.serverTime, selfId, socketClient.getPingMs());
-    while (accumulator >= 1 / 30) {
+    while (accumulator >= 1 / INPUT_TICK_RATE) {
         const mouse = input.getMouseScreenPosition();
         const worldMouse = renderer.screenToWorld(mouse.x, mouse.y, latestInterpolated, selfId);
         const allowInput = !latestInterpolated.session || latestInterpolated.session.phase === "in_progress";
@@ -228,7 +231,7 @@ const loop = (now) => {
                 socketClient.castAbility(trigger);
             }
         }
-        accumulator -= 1 / 30;
+        accumulator -= 1 / INPUT_TICK_RATE;
     }
     requestAnimationFrame(loop);
 };
