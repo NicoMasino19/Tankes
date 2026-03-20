@@ -1,4 +1,8 @@
 import {
+  type AbilityId,
+  type AbilityCastRejectedPayload,
+  type AbilityOfferPayload,
+  type AbilitySlot,
   createNetworkCodec,
   NET_PING_PROBE_INTERVAL_MS,
   NET_PING_SMOOTHING_ALPHA,
@@ -20,6 +24,8 @@ interface ClientSocketOptions {
   serverUrl: string;
   onJoinAck: (payload: JoinAckPayload) => void;
   onWorldDelta: (delta: WorldDeltaSnapshot) => void;
+  onAbilityOffer?: (payload: AbilityOfferPayload) => void;
+  onAbilityCastRejected?: (payload: AbilityCastRejectedPayload) => void;
   onRoundEnded?: (payload: RoundEndedPayload) => void;
   onRoundReset?: (payload: RoundResetPayload) => void;
 }
@@ -92,8 +98,12 @@ export class ClientSocket {
     });
 
     socket.on(SocketEvents.WorldUpdate, (payload: ArrayBuffer | Uint8Array) => {
-      const delta = this.codec.decodeWorldUpdate(payload);
-      this.options.onWorldDelta(delta);
+      try {
+        const delta = this.codec.decodeWorldUpdate(payload);
+        this.options.onWorldDelta(delta);
+      } catch {
+        // Malformed snapshot — drop frame silently
+      }
     });
 
     socket.on(SocketEvents.RoundEnded, (payload: RoundEndedPayload) => {
@@ -117,6 +127,14 @@ export class ClientSocket {
 
       this.smoothedPingMs =
         this.smoothedPingMs + (roundTripMs - this.smoothedPingMs) * NET_PING_SMOOTHING_ALPHA;
+    });
+
+    socket.on(SocketEvents.AbilityOffer, (payload: AbilityOfferPayload) => {
+      this.options.onAbilityOffer?.(payload);
+    });
+
+    socket.on(SocketEvents.AbilityCastRejected, (payload: AbilityCastRejectedPayload) => {
+      this.options.onAbilityCastRejected?.(payload);
     });
 
     return socket;
@@ -163,5 +181,13 @@ export class ClientSocket {
 
   upgradeStat(payload: UpgradeStatPayload): void {
     this.socket?.emit(SocketEvents.UpgradeStat, payload);
+  }
+
+  chooseAbility(payload: { slot: AbilitySlot; abilityId: AbilityId }): void {
+    this.socket?.emit(SocketEvents.ChooseAbility, payload);
+  }
+
+  castAbility(slot: AbilitySlot): void {
+    this.socket?.emit(SocketEvents.CastAbility, { slot });
   }
 }

@@ -30,7 +30,9 @@ const sfx = new SfxManager();
 const REMOTE_AUDIO_NEAR_DISTANCE = 180;
 const REMOTE_AUDIO_FAR_DISTANCE = 1100;
 const REMOTE_AUDIO_SMOOTHING = 0.22;
-const INPUT_SEND_RATE = SERVER_TICK_RATE;
+const REMOTE_AUDIO_MIN_VOLUME = 0.01;
+const MAX_FRAME_DELTA_SECONDS = 0.1;
+const INPUT_TICK_RATE = 30;
 const remoteAudioMixByPlayerId = new Map<string, number>();
 
 const smoothstep = (edge0: number, edge1: number, value: number): number => {
@@ -58,6 +60,9 @@ const statsHud = new StatsHud(
   (stat) => {
     socketClient.upgradeStat({ stat });
   },
+  ({ slot, abilityId }) => {
+    socketClient.chooseAbility({ slot, abilityId });
+  },
   {
     initialState: sfx.getSettings(),
     onToggleMute: () => {
@@ -73,10 +78,19 @@ const statsHud = new StatsHud(
 );
 app.appendChild(statsHud.element);
 
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !joined) {
+    return;
+  }
+
+  event.preventDefault();
+  statsHud.togglePauseMenu();
+});
+
 const defaultServerUrl = `${window.location.protocol === "https:" ? "https" : "http"}://${window.location.hostname || "127.0.0.1"}:3001`;
 
 const socketClient = new ClientSocket({
-  serverUrl: import.meta.env.VITE_SERVER_URL ?? defaultServerUrl,
+  serverUrl: import.meta.env.VITE_SERVER_URL || defaultServerUrl,
   onJoinAck: (payload) => {
     selfId = payload.playerId;
     joined = true;
@@ -124,7 +138,7 @@ const socketClient = new ClientSocket({
       if (event.type === GameplayEventType.Shot) {
         const selfShot = event.playerId === selfId;
         const volumeScale = getRemoteVolumeScale(event.playerId);
-        if (!selfShot && volumeScale <= 0.01) {
+        if (!selfShot && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
           continue;
         }
 
@@ -138,7 +152,7 @@ const socketClient = new ClientSocket({
       if (event.type === GameplayEventType.Damage) {
         const selfDamage = event.playerId === selfId;
         const volumeScale = getRemoteVolumeScale(event.playerId);
-        if (!selfDamage && volumeScale <= 0.01) {
+        if (!selfDamage && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
           continue;
         }
 
@@ -152,7 +166,7 @@ const socketClient = new ClientSocket({
       if (event.type === GameplayEventType.Death) {
         const selfDeath = event.playerId === selfId;
         const volumeScale = getRemoteVolumeScale(event.playerId);
-        if (!selfDeath && volumeScale <= 0.01) {
+        if (!selfDeath && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
           continue;
         }
 
@@ -166,7 +180,7 @@ const socketClient = new ClientSocket({
       if (event.type === GameplayEventType.Respawn) {
         const selfRespawn = event.playerId === selfId;
         const volumeScale = getRemoteVolumeScale(event.playerId);
-        if (!selfRespawn && volumeScale <= 0.01) {
+        if (!selfRespawn && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
           continue;
         }
 
@@ -185,7 +199,7 @@ const socketClient = new ClientSocket({
       if (event.type === GameplayEventType.ZoneCapturing) {
         const selfCapturing = event.playerId === selfId;
         const volumeScale = getRemoteVolumeScale(event.playerId);
-        if (!selfCapturing && volumeScale <= 0.01) {
+        if (!selfCapturing && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
           continue;
         }
 
@@ -201,7 +215,7 @@ const socketClient = new ClientSocket({
       if (event.type === GameplayEventType.ZoneCaptured) {
         const selfCaptured = event.playerId === selfId;
         const volumeScale = getRemoteVolumeScale(event.playerId);
-        if (!selfCaptured && volumeScale <= 0.01) {
+        if (!selfCaptured && volumeScale <= REMOTE_AUDIO_MIN_VOLUME) {
           continue;
         }
 
@@ -209,6 +223,12 @@ const socketClient = new ClientSocket({
       }
     }
     interpolation.push(state);
+  },
+  onAbilityOffer: (payload) => {
+    statsHud.setAbilityOffer(payload);
+  },
+  onAbilityCastRejected: (payload) => {
+    statsHud.showAbilityCastRejected(payload);
   },
   onRoundEnded: () => {
     sfx.playRoundEnded();
@@ -235,7 +255,7 @@ let accumulator = 0;
 let lastFrame = performance.now();
 
 const loop = (now: number): void => {
-  const deltaSeconds = Math.min(0.1, (now - lastFrame) / 1000);
+  const deltaSeconds = Math.min(MAX_FRAME_DELTA_SECONDS, (now - lastFrame) / 1000);
   lastFrame = now;
   accumulator += deltaSeconds;
 
@@ -251,14 +271,17 @@ const loop = (now: number): void => {
     socketClient.getPingMs()
   );
 
-  while (accumulator >= 1 / INPUT_SEND_RATE) {
+  while (accumulator >= 1 / INPUT_TICK_RATE) {
     const mouse = input.getMouseScreenPosition();
     const worldMouse = renderer.screenToWorld(mouse.x, mouse.y, latestInterpolated, selfId);
     const allowInput = !latestInterpolated.session || latestInterpolated.session.phase === "in_progress";
     if (joined && selfId && allowInput) {
       socketClient.sendInput(input.buildInput(worldMouse.x, worldMouse.y));
+      for (const trigger of input.consumeAbilityTriggers()) {
+        socketClient.castAbility(trigger);
+      }
     }
-    accumulator -= 1 / INPUT_SEND_RATE;
+    accumulator -= 1 / INPUT_TICK_RATE;
   }
 
   requestAnimationFrame(loop);

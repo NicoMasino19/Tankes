@@ -1,4 +1,5 @@
 import type {
+  AbilityVfxCue,
   BulletNetState,
   MatchState,
   PlayerNetState,
@@ -12,6 +13,7 @@ export type SessionDelta = MatchState;
 export interface WorldDeltaSnapshot {
   tick: number;
   serverTime: number;
+  abilityVfxCues?: AbilityVfxCue[];
   session?: SessionDelta;
   playersUpsert: PlayerNetState[];
   playersRemove: string[];

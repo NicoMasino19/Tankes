@@ -23,3 +23,8 @@ export const createBaseStats = (): PlayerStats => ({
   reloadSpeed: 0,
   maxHealth: 0
 });
+
+export const getXpRequiredForLevel = (level: number): number => {
+  const safeLevel = Math.max(1, Math.floor(level));
+  return 100 + (safeLevel - 1) * 70;
+};

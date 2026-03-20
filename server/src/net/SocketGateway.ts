@@ -3,41 +3,34 @@ import type { Server as HttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import {
-  type BulletNetState,
+  type AbilityVfxCue,
+  type AbilityOfferPayload,
   createNetworkCodec,
   FIXED_DELTA_SECONDS,
   type MatchConfig,
   MatchWinCondition,
-  type MatchState,
   NetworkCodecMode,
-  type PlayerNetState,
-  type PowerUpNetState,
+  type PingAckPayload,
   type RoundEndedPayload,
   type RoundResetPayload,
-  type ShapeNetState,
-  type ZoneNetState,
   SERVER_TICK_RATE,
   SNAPSHOT_RATE,
-  STAT_KEYS,
   SocketEvents,
   type InputState,
-  type JoinPayload,
-  type StatKey,
-  type UpgradeStatPayload,
-  type WorldDeltaSnapshot
 } from "@tankes/shared";
 import { Server } from "socket.io";
 import type { Socket } from "socket.io";
 import { World } from "../game/World";
-
-interface ReplicationTracker {
-  knownPlayers: Map<string, number>;
-  knownBullets: Map<string, number>;
-  knownShapes: Map<string, number>;
-  knownZones: Map<string, number>;
-  knownPowerUps: Map<string, number>;
-  knownSessionTick: number;
-}
+import {
+  type JoinRequest,
+  sanitizeJoinPayload,
+  sanitizeInputState,
+  sanitizeUpgradePayload,
+  sanitizeCastAbilityPayload,
+  sanitizeChooseAbilityPayload,
+  sanitizePingPayload
+} from "./payloadValidation";
+import { ReplicationService, type ReplicationTracker } from "./ReplicationService";
 
 interface EventRatePolicy {
   windowMs: number;
@@ -71,11 +64,6 @@ interface PendingReconnectSession {
   resumeToken: string;
   expiresAtMs: number;
   cleanupTimer: NodeJS.Timeout;
-}
-
-interface JoinRequest {
-  nickname: string;
-  resumeToken?: string;
 }
 
 const tickIntervalMs = 1000 / SERVER_TICK_RATE;
@@ -116,6 +104,14 @@ const RATE_LIMIT_INPUT_WINDOW_MS = parsePositiveIntFromEnv("RATE_LIMIT_INPUT_WIN
 const RATE_LIMIT_INPUT_MAX_EVENTS = parsePositiveIntFromEnv("RATE_LIMIT_INPUT_MAX_EVENTS", 120);
 const RATE_LIMIT_UPGRADE_WINDOW_MS = parsePositiveIntFromEnv("RATE_LIMIT_UPGRADE_WINDOW_MS", 2_000);
 const RATE_LIMIT_UPGRADE_MAX_EVENTS = parsePositiveIntFromEnv("RATE_LIMIT_UPGRADE_MAX_EVENTS", 12);
+const RATE_LIMIT_ABILITY_CAST_WINDOW_MS = parsePositiveIntFromEnv("RATE_LIMIT_ABILITY_CAST_WINDOW_MS", 2_000);
+const RATE_LIMIT_ABILITY_CAST_MAX_EVENTS = parsePositiveIntFromEnv("RATE_LIMIT_ABILITY_CAST_MAX_EVENTS", 36);
+const RATE_LIMIT_ABILITY_CHOOSE_WINDOW_MS = parsePositiveIntFromEnv("RATE_LIMIT_ABILITY_CHOOSE_WINDOW_MS", 2_000);
+const RATE_LIMIT_ABILITY_CHOOSE_MAX_EVENTS = parsePositiveIntFromEnv("RATE_LIMIT_ABILITY_CHOOSE_MAX_EVENTS", 12);
+const RATE_LIMIT_PING_WINDOW_MS = parsePositiveIntFromEnv("RATE_LIMIT_PING_WINDOW_MS", 2_000);
+const RATE_LIMIT_PING_MAX_EVENTS = parsePositiveIntFromEnv("RATE_LIMIT_PING_MAX_EVENTS", 10);
+
+const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
 
 const EVENT_RATE_POLICIES: Record<string, EventRatePolicy> = {
   [SocketEvents.Join]: {
@@ -129,6 +125,18 @@ const EVENT_RATE_POLICIES: Record<string, EventRatePolicy> = {
   [SocketEvents.UpgradeStat]: {
     windowMs: RATE_LIMIT_UPGRADE_WINDOW_MS,
     maxEvents: RATE_LIMIT_UPGRADE_MAX_EVENTS
+  },
+  [SocketEvents.CastAbility]: {
+    windowMs: RATE_LIMIT_ABILITY_CAST_WINDOW_MS,
+    maxEvents: RATE_LIMIT_ABILITY_CAST_MAX_EVENTS
+  },
+  [SocketEvents.ChooseAbility]: {
+    windowMs: RATE_LIMIT_ABILITY_CHOOSE_WINDOW_MS,
+    maxEvents: RATE_LIMIT_ABILITY_CHOOSE_MAX_EVENTS
+  },
+  [SocketEvents.Ping]: {
+    windowMs: RATE_LIMIT_PING_WINDOW_MS,
+    maxEvents: RATE_LIMIT_PING_MAX_EVENTS
   }
 };
 
@@ -139,12 +147,11 @@ const MAX_RATE_VIOLATIONS_BEFORE_DISCONNECT = parsePositiveIntFromEnv(
 const RECONNECT_GRACE_MS = parsePositiveIntFromEnv("RECONNECT_GRACE_MS", 7_000);
 const MIN_UPGRADE_INTERVAL_MS = parsePositiveIntFromEnv("UPGRADE_MIN_INTERVAL_MS", 120);
 const METRICS_REPORT_INTERVAL_MS = 10_000;
-const MAX_INPUT_SEQUENCE = 2_147_483_647;
-const NICKNAME_ALLOWED = /[^A-Za-z0-9 _-]/g;
-const MATCH_OBJECTIVE_KILLS = parsePositiveIntFromEnv("MATCH_OBJECTIVE_KILLS", 14);
-const MATCH_TIME_LIMIT_MS = parsePositiveIntFromEnv("MATCH_TIME_LIMIT_MS", 240_000);
+const MAX_PENDING_ABILITY_VFX_CUES = 512;
+const MATCH_OBJECTIVE_KILLS = parsePositiveIntFromEnv("MATCH_OBJECTIVE_KILLS", 18);
+const MATCH_TIME_LIMIT_MS = parsePositiveIntFromEnv("MATCH_TIME_LIMIT_MS", 600_000);
 const MATCH_ROUND_END_PAUSE_MS = parsePositiveIntFromEnv("MATCH_ROUND_END_PAUSE_MS", 5_000);
-const MATCH_RESPAWN_DELAY_MS = parsePositiveIntFromEnv("MATCH_RESPAWN_DELAY_MS", 2_200);
+const MATCH_RESPAWN_DELAY_MS = parsePositiveIntFromEnv("MATCH_RESPAWN_DELAY_MS", 1_800);
 const MATCH_WIN_CONDITION = parseMatchWinConditionFromEnv(
   "MATCH_WIN_CONDITION",
   MatchWinCondition.TimeLimit
@@ -169,12 +176,6 @@ const neutralInput: InputState = {
   sequence: 0
 };
 
-const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value);
-const clamp = (value: number, min: number, max: number): number =>
-  Math.min(max, Math.max(min, value));
-
 const calculateP95 = (samples: number[]): number => {
   if (samples.length === 0) {
     return 0;
@@ -185,82 +186,6 @@ const calculateP95 = (samples: number[]): number => {
   return sorted[index] ?? 0;
 };
 
-const sanitizeNickname = (nickname: unknown): string => {
-  if (typeof nickname !== "string") {
-    return "Tanker";
-  }
-
-  const cleaned = nickname.replace(NICKNAME_ALLOWED, "").trim().slice(0, 16);
-  return cleaned || "Tanker";
-};
-
-const sanitizeJoinPayload = (payload: unknown): JoinRequest => {
-  const base = payload && typeof payload === "object" ? (payload as Partial<JoinPayload>) : {};
-  const nickname = sanitizeNickname(base.nickname);
-
-  if (typeof base.resumeToken !== "string") {
-    return { nickname };
-  }
-
-  const token = base.resumeToken.trim();
-  if (!token || token.length > 128) {
-    return { nickname };
-  }
-
-  return {
-    nickname,
-    resumeToken: token
-  };
-};
-
-const sanitizeInputState = (payload: unknown): InputState | null => {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const input = payload as Partial<InputState>;
-  if (
-    !isBoolean(input.up) ||
-    !isBoolean(input.down) ||
-    !isBoolean(input.left) ||
-    !isBoolean(input.right) ||
-    !isBoolean(input.shoot) ||
-    !isFiniteNumber(input.aimX) ||
-    !isFiniteNumber(input.aimY) ||
-    !isFiniteNumber(input.sequence)
-  ) {
-    return null;
-  }
-
-  return {
-    up: input.up,
-    down: input.down,
-    left: input.left,
-    right: input.right,
-    shoot: input.shoot,
-    aimX: clamp(input.aimX, -100_000, 100_000),
-    aimY: clamp(input.aimY, -100_000, 100_000),
-    sequence: clamp(Math.trunc(input.sequence), 0, MAX_INPUT_SEQUENCE)
-  };
-};
-
-const sanitizeUpgradePayload = (payload: unknown): UpgradeStatPayload | null => {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const statCandidate = (payload as Partial<UpgradeStatPayload>).stat;
-  if (typeof statCandidate !== "string") {
-    return null;
-  }
-
-  if (!STAT_KEYS.includes(statCandidate as StatKey)) {
-    return null;
-  }
-
-  return { stat: statCandidate as StatKey };
-};
-
 export class SocketGateway {
   private readonly httpServer: HttpServer;
   private readonly world = new World({
@@ -269,8 +194,10 @@ export class SocketGateway {
   private readonly codec = createNetworkCodec(networkCodecMode);
   private readonly replication = new Map<string, ReplicationTracker>();
   private readonly socketSessions = new Map<string, SocketSessionState>();
+  private readonly replicationService: ReplicationService;
   private readonly activePlayerSessions = new Map<string, ActivePlayerSession>();
   private readonly pendingReconnectByToken = new Map<string, PendingReconnectSession>();
+  private readonly pendingAbilityVfxCues: AbilityVfxCue[] = [];
   private readonly io: Server;
   private tick = 0;
   private timer: NodeJS.Timeout | null = null;
@@ -278,6 +205,8 @@ export class SocketGateway {
   private readonly metrics = {
     acceptedInputs: 0,
     acceptedUpgrades: 0,
+    acceptedAbilityCasts: 0,
+    acceptedAbilityChoices: 0,
     rejectedEvents: 0,
     rateLimitedEvents: 0,
     invalidPayloadEvents: 0,
@@ -301,12 +230,35 @@ export class SocketGateway {
   };
 
   constructor(private readonly port: number) {
-    this.httpServer = createServer();
+    this.httpServer = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/health") {
+        response.writeHead(200, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store"
+        });
+        response.end("ok");
+        return;
+      }
+
+      response.writeHead(404, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store"
+      });
+      response.end("not found");
+    });
     this.io = new Server(this.httpServer, {
       cors: {
-        origin: "*"
+        origin: CORS_ORIGIN
       }
     });
+
+    this.replicationService = new ReplicationService(
+      this.world,
+      this.io,
+      this.codec,
+      this.replication,
+      this.socketSessions
+    );
 
     this.io.on("connection", (socket) => {
       this.handleConnection(socket);
@@ -377,6 +329,18 @@ export class SocketGateway {
     }, tickIntervalMs);
   }
 
+  private handleSocketError(socket: Socket, eventName: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `[net:error] socket=${socket.id} event=${eventName} error=${message}\n`
+    );
+    try {
+      socket.disconnect(true);
+    } catch {
+      // Swallow disconnect errors
+    }
+  }
+
   private handleConnection(socket: Socket): void {
     this.socketSessions.set(socket.id, {
       joined: false,
@@ -436,169 +400,286 @@ export class SocketGateway {
     });
 
     socket.on(SocketEvents.Join, (payload: unknown) => {
-      if (!allowEvent(SocketEvents.Join)) {
-        this.logRejected(socket.id, SocketEvents.Join, "rate_limited");
-        return;
-      }
-
-      const session = this.socketSessions.get(socket.id);
-      if (!session) {
-        return;
-      }
-      if (session.joined) {
-        this.logRejected(socket.id, SocketEvents.Join, "already_joined");
-        return;
-      }
-
-      const joinRequest = sanitizeJoinPayload(payload);
-      const resumed = this.tryResume(joinRequest, socket.id);
-
-      let playerId: string;
-      let resumeToken: string;
-      let nickname: string;
-
-      if (resumed) {
-        playerId = resumed.playerId;
-        resumeToken = resumed.resumeToken;
-        nickname = resumed.nickname;
-      } else {
-        playerId = randomUUID();
-        resumeToken = randomUUID();
-        nickname = joinRequest.nickname;
-        this.world.addPlayer(playerId, nickname, this.tick);
-        this.activePlayerSessions.set(playerId, {
-          socketId: socket.id,
-          playerId,
-          nickname,
-          resumeToken
-        });
-      }
-
-      session.joined = true;
-      session.playerId = playerId;
-      session.nickname = nickname;
-      session.lastInputSequence = -1;
-
-      const tracker = this.replication.get(socket.id);
-      if (tracker) {
-        tracker.knownPlayers.clear();
-        tracker.knownBullets.clear();
-        tracker.knownShapes.clear();
-        tracker.knownZones.clear();
-        tracker.knownPowerUps.clear();
-        tracker.knownSessionTick = -1;
-      }
-
-      this.world.setInput(playerId, neutralInput);
-      socket.emit(SocketEvents.JoinAck, {
-        playerId,
-        serverTime: Date.now(),
-        resumeToken
-      });
-    });
-
-    socket.on(SocketEvents.Input, (payload: unknown) => {
-      if (!allowEvent(SocketEvents.Input)) {
-        this.logRejected(socket.id, SocketEvents.Input, "rate_limited");
-        return;
-      }
-
-      const session = this.socketSessions.get(socket.id);
-      if (!session || !session.joined || !session.playerId) {
-        this.logRejected(socket.id, SocketEvents.Input, "before_join");
-        return;
-      }
-
-      const input = sanitizeInputState(payload);
-      if (!input) {
-        this.logRejected(socket.id, SocketEvents.Input, "invalid_payload");
-        return;
-      }
-
-      if (input.sequence < session.lastInputSequence) {
-        this.logRejected(socket.id, SocketEvents.Input, "stale_sequence");
-        return;
-      }
-
-      session.lastInputSequence = input.sequence;
-      this.world.setInput(session.playerId, input);
-
-      this.metrics.acceptedInputs += 1;
-    });
-
-    socket.on(SocketEvents.UpgradeStat, (payload: unknown) => {
-      if (!allowEvent(SocketEvents.UpgradeStat)) {
-        this.logRejected(socket.id, SocketEvents.UpgradeStat, "rate_limited");
-        return;
-      }
-
-      const session = this.socketSessions.get(socket.id);
-      if (!session || !session.joined || !session.playerId) {
-        this.logRejected(socket.id, SocketEvents.UpgradeStat, "before_join");
-        return;
-      }
-
-      const nowMs = Date.now();
-      if (nowMs - session.lastUpgradeAtMs < MIN_UPGRADE_INTERVAL_MS) {
-        this.logRejected(socket.id, SocketEvents.UpgradeStat, "upgrade_spam");
-        return;
-      }
-
-      const upgradePayload = sanitizeUpgradePayload(payload);
-      if (!upgradePayload) {
-        this.logRejected(socket.id, SocketEvents.UpgradeStat, "invalid_payload");
-        return;
-      }
-
-      session.lastUpgradeAtMs = nowMs;
-      const upgraded = this.world.upgradeStat(session.playerId, upgradePayload.stat, this.tick);
-      if (!upgraded) {
-        this.logRejected(socket.id, SocketEvents.UpgradeStat, "rejected_by_world");
-        return;
-      }
-
-      this.metrics.acceptedUpgrades += 1;
-    });
-
-    socket.on("disconnect", () => {
-      this.replication.delete(socket.id);
-      const session = this.socketSessions.get(socket.id);
-      this.socketSessions.delete(socket.id);
-
-      if (!session || !session.joined || !session.playerId || !session.nickname) {
-        return;
-      }
-
-      this.world.setInput(session.playerId, neutralInput);
-
-      const activeSession = this.activePlayerSessions.get(session.playerId);
-      if (!activeSession || activeSession.socketId !== socket.id) {
-        return;
-      }
-
-      const existingPending = this.pendingReconnectByToken.get(activeSession.resumeToken);
-      if (existingPending) {
-        clearTimeout(existingPending.cleanupTimer);
-      }
-
-      const cleanupTimer = setTimeout(() => {
-        const pending = this.pendingReconnectByToken.get(activeSession.resumeToken);
-        if (!pending) {
+      try {
+        if (!allowEvent(SocketEvents.Join)) {
+          this.logRejected(socket.id, SocketEvents.Join, "rate_limited");
           return;
         }
 
-        this.pendingReconnectByToken.delete(activeSession.resumeToken);
-        this.activePlayerSessions.delete(pending.playerId);
-        this.world.removePlayer(pending.playerId, this.tick);
-      }, RECONNECT_GRACE_MS);
+        const session = this.socketSessions.get(socket.id);
+        if (!session) {
+          return;
+        }
+        if (session.joined) {
+          this.logRejected(socket.id, SocketEvents.Join, "already_joined");
+          return;
+        }
 
-      this.pendingReconnectByToken.set(activeSession.resumeToken, {
-        playerId: session.playerId,
-        nickname: session.nickname,
-        resumeToken: activeSession.resumeToken,
-        expiresAtMs: Date.now() + RECONNECT_GRACE_MS,
-        cleanupTimer
-      });
+        const joinRequest = sanitizeJoinPayload(payload);
+        const resumed = this.tryResume(joinRequest, socket.id);
+
+        let playerId: string;
+        let resumeToken: string;
+        let nickname: string;
+
+        if (resumed) {
+          playerId = resumed.playerId;
+          resumeToken = resumed.resumeToken;
+          nickname = resumed.nickname;
+        } else {
+          playerId = randomUUID();
+          resumeToken = randomUUID();
+          nickname = joinRequest.nickname;
+          this.world.addPlayer(playerId, nickname, this.tick);
+          this.activePlayerSessions.set(playerId, {
+            socketId: socket.id,
+            playerId,
+            nickname,
+            resumeToken
+          });
+        }
+
+        session.joined = true;
+        session.playerId = playerId;
+        session.nickname = nickname;
+        session.lastInputSequence = -1;
+
+        const tracker = this.replication.get(socket.id);
+        if (tracker) {
+          tracker.knownPlayers.clear();
+          tracker.knownBullets.clear();
+          tracker.knownShapes.clear();
+          tracker.knownZones.clear();
+          tracker.knownPowerUps.clear();
+          tracker.knownSessionTick = -1;
+        }
+
+        this.world.setInput(playerId, neutralInput);
+        socket.emit(SocketEvents.JoinAck, {
+          playerId,
+          serverTime: Date.now(),
+          resumeToken
+        });
+
+        const player = this.world.getPlayer(playerId);
+        if (player?.pendingAbilityChoice) {
+          socket.emit(SocketEvents.AbilityOffer, player.pendingAbilityChoice);
+        }
+      } catch (error) {
+        this.handleSocketError(socket, SocketEvents.Join, error);
+      }
+    });
+
+    socket.on(SocketEvents.Input, (payload: unknown) => {
+      try {
+        if (!allowEvent(SocketEvents.Input)) {
+          this.logRejected(socket.id, SocketEvents.Input, "rate_limited");
+          return;
+        }
+
+        const session = this.socketSessions.get(socket.id);
+        if (!session || !session.joined || !session.playerId) {
+          this.logRejected(socket.id, SocketEvents.Input, "before_join");
+          return;
+        }
+
+        const input = sanitizeInputState(payload);
+        if (!input) {
+          this.logRejected(socket.id, SocketEvents.Input, "invalid_payload");
+          return;
+        }
+
+        if (input.sequence < session.lastInputSequence) {
+          this.logRejected(socket.id, SocketEvents.Input, "stale_sequence");
+          return;
+        }
+
+        session.lastInputSequence = input.sequence;
+        this.world.setInput(session.playerId, input);
+
+        this.metrics.acceptedInputs += 1;
+      } catch (error) {
+        this.handleSocketError(socket, SocketEvents.Input, error);
+      }
+    });
+
+    socket.on(SocketEvents.UpgradeStat, (payload: unknown) => {
+      try {
+        if (!allowEvent(SocketEvents.UpgradeStat)) {
+          this.logRejected(socket.id, SocketEvents.UpgradeStat, "rate_limited");
+          return;
+        }
+
+        const session = this.socketSessions.get(socket.id);
+        if (!session || !session.joined || !session.playerId) {
+          this.logRejected(socket.id, SocketEvents.UpgradeStat, "before_join");
+          return;
+        }
+
+        const nowMs = Date.now();
+        if (nowMs - session.lastUpgradeAtMs < MIN_UPGRADE_INTERVAL_MS) {
+          this.logRejected(socket.id, SocketEvents.UpgradeStat, "upgrade_spam");
+          return;
+        }
+
+        const upgradePayload = sanitizeUpgradePayload(payload);
+        if (!upgradePayload) {
+          this.logRejected(socket.id, SocketEvents.UpgradeStat, "invalid_payload");
+          return;
+        }
+
+        session.lastUpgradeAtMs = nowMs;
+        const upgraded = this.world.upgradeStat(session.playerId, upgradePayload.stat, this.tick);
+        if (!upgraded) {
+          this.logRejected(socket.id, SocketEvents.UpgradeStat, "rejected_by_world");
+          return;
+        }
+
+        this.metrics.acceptedUpgrades += 1;
+      } catch (error) {
+        this.handleSocketError(socket, SocketEvents.UpgradeStat, error);
+      }
+    });
+
+    socket.on(SocketEvents.ChooseAbility, (payload: unknown) => {
+      try {
+        if (!allowEvent(SocketEvents.ChooseAbility)) {
+          this.logRejected(socket.id, SocketEvents.ChooseAbility, "rate_limited");
+          return;
+        }
+
+        const session = this.socketSessions.get(socket.id);
+        if (!session || !session.joined || !session.playerId) {
+          this.logRejected(socket.id, SocketEvents.ChooseAbility, "before_join");
+          return;
+        }
+
+        const choosePayload = sanitizeChooseAbilityPayload(payload);
+        if (!choosePayload) {
+          this.logRejected(socket.id, SocketEvents.ChooseAbility, "invalid_payload");
+          return;
+        }
+
+        const accepted = this.world.chooseAbility(
+          session.playerId,
+          choosePayload.slot,
+          choosePayload.abilityId,
+          this.tick
+        );
+        if (!accepted) {
+          this.logRejected(socket.id, SocketEvents.ChooseAbility, "rejected_by_world");
+          return;
+        }
+
+        this.metrics.acceptedAbilityChoices += 1;
+      } catch (error) {
+        this.handleSocketError(socket, SocketEvents.ChooseAbility, error);
+      }
+    });
+
+    socket.on(SocketEvents.CastAbility, (payload: unknown) => {
+      try {
+        if (!allowEvent(SocketEvents.CastAbility)) {
+          this.logRejected(socket.id, SocketEvents.CastAbility, "rate_limited");
+          return;
+        }
+
+        const session = this.socketSessions.get(socket.id);
+        if (!session || !session.joined || !session.playerId) {
+          this.logRejected(socket.id, SocketEvents.CastAbility, "before_join");
+          return;
+        }
+
+        const castPayload = sanitizeCastAbilityPayload(payload);
+        if (!castPayload) {
+          this.logRejected(socket.id, SocketEvents.CastAbility, "invalid_payload");
+          return;
+        }
+
+        const result = this.world.castAbility(session.playerId, castPayload, this.tick, Date.now());
+        if (!result.ok) {
+          this.logRejected(socket.id, SocketEvents.CastAbility, "rejected_by_world");
+          if (result.rejected) {
+            socket.emit(SocketEvents.AbilityCastRejected, result.rejected);
+          }
+          return;
+        }
+
+        this.metrics.acceptedAbilityCasts += 1;
+      } catch (error) {
+        this.handleSocketError(socket, SocketEvents.CastAbility, error);
+      }
+    });
+
+    socket.on(SocketEvents.Ping, (payload: unknown) => {
+      if (!allowEvent(SocketEvents.Ping)) {
+        this.logRejected(socket.id, SocketEvents.Ping, "rate_limited");
+        return;
+      }
+
+      try {
+        const pingProbe = sanitizePingPayload(payload);
+        if (!pingProbe) {
+          this.logRejected(socket.id, SocketEvents.Ping, "invalid_payload");
+          return;
+        }
+
+        const pingAck: PingAckPayload = {
+          clientSentAtMs: pingProbe.clientSentAtMs,
+          serverReceivedAtMs: Date.now()
+        };
+        socket.emit(SocketEvents.PingAck, pingAck);
+      } catch (error) {
+        this.handleSocketError(socket, SocketEvents.Ping, error);
+      }
+    });
+
+    socket.on("disconnect", () => {
+      try {
+        this.replication.delete(socket.id);
+        const session = this.socketSessions.get(socket.id);
+        this.socketSessions.delete(socket.id);
+
+        if (!session || !session.joined || !session.playerId || !session.nickname) {
+          return;
+        }
+
+        this.world.setInput(session.playerId, neutralInput);
+
+        const activeSession = this.activePlayerSessions.get(session.playerId);
+        if (!activeSession || activeSession.socketId !== socket.id) {
+          return;
+        }
+
+        const existingPending = this.pendingReconnectByToken.get(activeSession.resumeToken);
+        if (existingPending) {
+          clearTimeout(existingPending.cleanupTimer);
+        }
+
+        const cleanupTimer = setTimeout(() => {
+          const pending = this.pendingReconnectByToken.get(activeSession.resumeToken);
+          if (!pending) {
+            return;
+          }
+
+          this.pendingReconnectByToken.delete(activeSession.resumeToken);
+          this.activePlayerSessions.delete(pending.playerId);
+          this.world.removePlayer(pending.playerId, this.tick);
+        }, RECONNECT_GRACE_MS);
+
+        this.pendingReconnectByToken.set(activeSession.resumeToken, {
+          playerId: session.playerId,
+          nickname: session.nickname,
+          resumeToken: activeSession.resumeToken,
+          expiresAtMs: Date.now() + RECONNECT_GRACE_MS,
+          cleanupTimer
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(
+          `[net:error] socket=${socket.id} event=disconnect error=${message}\n`
+        );
+      }
     });
   }
 
@@ -608,6 +689,14 @@ export class SocketGateway {
     const tickStartMs = performance.now();
     const stepMetrics = this.world.step(FIXED_DELTA_SECONDS, this.tick, nowMs);
     const sessionEvents = this.world.consumeSessionEvents();
+    const abilityOffers = this.world.consumeAbilityOfferEvents();
+    const tickAbilityVfxCues = this.world.consumeAbilityVfxCues();
+    if (tickAbilityVfxCues.length > 0) {
+      this.pendingAbilityVfxCues.push(...tickAbilityVfxCues);
+      if (this.pendingAbilityVfxCues.length > MAX_PENDING_ABILITY_VFX_CUES) {
+        this.pendingAbilityVfxCues.splice(0, this.pendingAbilityVfxCues.length - MAX_PENDING_ABILITY_VFX_CUES);
+      }
+    }
     const tickDurationMs = performance.now() - tickStartMs;
 
     this.metrics.tickDurationSamplesMs.push(tickDurationMs);
@@ -620,195 +709,30 @@ export class SocketGateway {
     this.metrics.collisionsEvaluatedSum += stepMetrics.collisionsEvaluated;
 
     if (this.tick % snapshotEveryTicks === 0) {
-      const deltaMetrics = this.broadcastDeltas(nowMs);
+      const cuesForSnapshot = [...this.pendingAbilityVfxCues];
+      this.pendingAbilityVfxCues.length = 0;
+      const deltaMetrics = this.replicationService.broadcastDeltas(this.tick, nowMs, cuesForSnapshot);
       this.metrics.payloadBytesSent += deltaMetrics.payloadBytesSent;
       this.metrics.payloadMessagesSent += deltaMetrics.payloadMessagesSent;
+      this.metrics.sessionDeltaBytesSent += deltaMetrics.sessionDeltaBytesSent;
+      this.metrics.sessionDeltaMessagesSent += deltaMetrics.sessionDeltaMessagesSent;
     }
 
     this.emitSessionEvents(sessionEvents);
+    this.emitAbilityOffers(abilityOffers);
 
     this.reportMetricsIfDue(nowMs);
   }
 
-  private broadcastDeltas(nowMs: number): { payloadBytesSent: number; payloadMessagesSent: number } {
-    const removedPlayers = this.world.consumeRemovedPlayers();
-    const removedBullets = this.world.consumeRemovedBullets();
-    const removedShapes = this.world.consumeRemovedShapes();
-    const removedZones = this.world.consumeRemovedZones();
-    const removedPowerUps = this.world.consumeRemovedPowerUps();
-    const sessionState: MatchState = this.world.getMatchState();
-    const playerStateCache = new Map<string, PlayerNetState>();
-    const bulletStateCache = new Map<string, BulletNetState>();
-    const shapeStateCache = new Map<string, ShapeNetState>();
-    const zoneStateCache = new Map<string, ZoneNetState>();
-    const powerUpStateCache = new Map<string, PowerUpNetState>();
-    let payloadBytesSent = 0;
-    let payloadMessagesSent = 0;
-    let sessionDeltaBytesSent = 0;
-    let sessionDeltaMessagesSent = 0;
-
-    for (const socket of this.io.sockets.sockets.values()) {
-      const session = this.socketSessions.get(socket.id);
-      if (!session?.joined) {
+  private emitAbilityOffers(events: Array<{ playerId: string; payload: AbilityOfferPayload }>): void {
+    for (const event of events) {
+      const active = this.activePlayerSessions.get(event.playerId);
+      if (!active) {
         continue;
       }
-
-      const tracker = this.replication.get(socket.id);
-      if (!tracker) {
-        continue;
-      }
-
-      const delta: WorldDeltaSnapshot = {
-        tick: this.tick,
-        serverTime: nowMs,
-        playersUpsert: [],
-        playersRemove: [],
-        bulletsUpsert: [],
-        bulletsRemove: [],
-        shapesUpsert: [],
-        shapesRemove: [],
-        zonesUpsert: [],
-        zonesRemove: [],
-        powerUpsUpsert: [],
-        powerUpsRemove: []
-      };
-
-      if (tracker.knownSessionTick < sessionState.updatedAtTick) {
-        delta.session = sessionState;
-        tracker.knownSessionTick = sessionState.updatedAtTick;
-      }
-
-      for (const player of this.world.getPlayers()) {
-        const knownTick = tracker.knownPlayers.get(player.id) ?? -1;
-        if (knownTick < player.updatedAtTick) {
-          let playerNetState = playerStateCache.get(player.id);
-          if (!playerNetState) {
-            playerNetState = this.world.toPlayerNetState(player);
-            playerStateCache.set(player.id, playerNetState);
-          }
-
-          delta.playersUpsert.push(playerNetState);
-          tracker.knownPlayers.set(player.id, player.updatedAtTick);
-        }
-      }
-
-      for (const bullet of this.world.getBullets()) {
-        const knownTick = tracker.knownBullets.get(bullet.id) ?? -1;
-        if (knownTick < bullet.updatedAtTick) {
-          let bulletNetState = bulletStateCache.get(bullet.id);
-          if (!bulletNetState) {
-            bulletNetState = this.world.toBulletNetState(bullet);
-            bulletStateCache.set(bullet.id, bulletNetState);
-          }
-
-          delta.bulletsUpsert.push(bulletNetState);
-          tracker.knownBullets.set(bullet.id, bullet.updatedAtTick);
-        }
-      }
-
-      for (const shape of this.world.getShapes()) {
-        const knownTick = tracker.knownShapes.get(shape.id) ?? -1;
-        if (knownTick < shape.updatedAtTick) {
-          let shapeNetState = shapeStateCache.get(shape.id);
-          if (!shapeNetState) {
-            shapeNetState = this.world.toShapeNetState(shape);
-            shapeStateCache.set(shape.id, shapeNetState);
-          }
-
-          delta.shapesUpsert.push(shapeNetState);
-          tracker.knownShapes.set(shape.id, shape.updatedAtTick);
-        }
-      }
-
-      for (const zone of this.world.getZones()) {
-        const knownTick = tracker.knownZones.get(zone.id) ?? -1;
-        if (knownTick < zone.updatedAtTick) {
-          let zoneNetState = zoneStateCache.get(zone.id);
-          if (!zoneNetState) {
-            zoneNetState = this.world.toZoneNetState(zone);
-            zoneStateCache.set(zone.id, zoneNetState);
-          }
-
-          delta.zonesUpsert.push(zoneNetState);
-          tracker.knownZones.set(zone.id, zone.updatedAtTick);
-        }
-      }
-
-      for (const powerUp of this.world.getPowerUps()) {
-        const knownTick = tracker.knownPowerUps.get(powerUp.id) ?? -1;
-        if (knownTick < powerUp.updatedAtTick) {
-          let powerUpNetState = powerUpStateCache.get(powerUp.id);
-          if (!powerUpNetState) {
-            powerUpNetState = this.world.toPowerUpNetState(powerUp);
-            powerUpStateCache.set(powerUp.id, powerUpNetState);
-          }
-
-          delta.powerUpsUpsert.push(powerUpNetState);
-          tracker.knownPowerUps.set(powerUp.id, powerUp.updatedAtTick);
-        }
-      }
-
-      for (const playerId of removedPlayers) {
-        if (tracker.knownPlayers.delete(playerId)) {
-          delta.playersRemove.push(playerId);
-        }
-      }
-
-      for (const bulletId of removedBullets) {
-        if (tracker.knownBullets.delete(bulletId)) {
-          delta.bulletsRemove.push(bulletId);
-        }
-      }
-
-      for (const shapeId of removedShapes) {
-        if (tracker.knownShapes.delete(shapeId)) {
-          delta.shapesRemove.push(shapeId);
-        }
-      }
-
-      for (const zoneId of removedZones) {
-        if (tracker.knownZones.delete(zoneId)) {
-          delta.zonesRemove.push(zoneId);
-        }
-      }
-
-      for (const powerUpId of removedPowerUps) {
-        if (tracker.knownPowerUps.delete(powerUpId)) {
-          delta.powerUpsRemove.push(powerUpId);
-        }
-      }
-
-      if (
-        delta.session ||
-        delta.playersUpsert.length > 0 ||
-        delta.playersRemove.length > 0 ||
-        delta.bulletsUpsert.length > 0 ||
-        delta.bulletsRemove.length > 0 ||
-        delta.shapesUpsert.length > 0 ||
-        delta.shapesRemove.length > 0 ||
-        delta.zonesUpsert.length > 0 ||
-        delta.zonesRemove.length > 0 ||
-        delta.powerUpsUpsert.length > 0 ||
-        delta.powerUpsRemove.length > 0
-      ) {
-        const payload = this.codec.encodeWorldUpdate(delta);
-        payloadBytesSent += payload.byteLength;
-        payloadMessagesSent += 1;
-        if (delta.session) {
-          sessionDeltaBytesSent += payload.byteLength;
-          sessionDeltaMessagesSent += 1;
-        }
-        socket.emit(SocketEvents.WorldUpdate, payload);
-      }
+      const socket = this.io.sockets.sockets.get(active.socketId);
+      socket?.emit(SocketEvents.AbilityOffer, event.payload);
     }
-
-    this.metrics.sessionDeltaBytesSent += sessionDeltaBytesSent;
-    this.metrics.sessionDeltaMessagesSent += sessionDeltaMessagesSent;
-
-    return {
-      payloadBytesSent,
-      payloadMessagesSent
-    };
   }
 
   private emitSessionEvents(
