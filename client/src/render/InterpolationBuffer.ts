@@ -1,4 +1,5 @@
 import {
+  type AbilityVfxCue,
   INTERPOLATION_DELAY_MS,
   type BulletNetState,
   type MatchState,
@@ -17,6 +18,7 @@ interface BufferedState {
 export interface InterpolatedWorld {
   tick: number;
   serverTime: number;
+  abilityVfxCues: AbilityVfxCue[];
   session: MatchState | null;
   players: PlayerNetState[];
   bullets: BulletNetState[];
@@ -42,8 +44,12 @@ const lerpAngle = (a: number, b: number, t: number): number => {
   return normalizeAngle(a + delta * t);
 };
 
+const RING_CAPACITY = 60;
+
 export class InterpolationBuffer {
-  private readonly history: BufferedState[] = [];
+  private readonly ring: (BufferedState | null)[] = new Array<BufferedState | null>(RING_CAPACITY).fill(null);
+  private head = 0;
+  private count = 0;
   private serverOffsetMs = 0;
 
   push(state: WorldState): void {
@@ -54,23 +60,42 @@ export class InterpolationBuffer {
       this.serverOffsetMs = this.serverOffsetMs * 0.9 + sample * 0.1;
     }
 
-    this.history.push({ serverTime: state.serverTime, state });
-    if (this.history.length > 60) {
-      this.history.shift();
+    const writeIndex = (this.head + this.count) % RING_CAPACITY;
+    this.ring[writeIndex] = { serverTime: state.serverTime, state };
+    if (this.count < RING_CAPACITY) {
+      this.count += 1;
+    } else {
+      this.head = (this.head + 1) % RING_CAPACITY;
     }
   }
 
-  getInterpolated(localPlayerId?: string | null): InterpolatedWorld {
-    const firstEntry = this.history[0];
+  private at(index: number): BufferedState | null {
+    if (index < 0 || index >= this.count) return null;
+    return this.ring[(this.head + index) % RING_CAPACITY] ?? null;
+  }
+
+  getInterpolated(): InterpolatedWorld {
+    const firstEntry = this.at(0);
     if (!firstEntry) {
-      return { tick: 0, serverTime: 0, session: null, players: [], bullets: [], shapes: [], zones: [], powerUps: [] };
+      return {
+        tick: 0,
+        serverTime: 0,
+        abilityVfxCues: [],
+        session: null,
+        players: [],
+        bullets: [],
+        shapes: [],
+        zones: [],
+        powerUps: []
+      };
     }
 
-    if (this.history.length === 1) {
+    if (this.count === 1) {
       const only = firstEntry.state;
       return {
         tick: only.tick,
         serverTime: only.serverTime,
+        abilityVfxCues: only.abilityVfxCues,
         session: only.session,
         players: Array.from(only.players.values()),
         bullets: Array.from(only.bullets.values()),
@@ -82,11 +107,11 @@ export class InterpolationBuffer {
 
     const renderServerTime = Date.now() - this.serverOffsetMs - INTERPOLATION_DELAY_MS;
     let older = firstEntry;
-    let newer = this.history[this.history.length - 1] ?? firstEntry;
+    let newer = this.at(this.count - 1) ?? firstEntry;
 
-    for (let index = 0; index < this.history.length - 1; index += 1) {
-      const current = this.history[index];
-      const next = this.history[index + 1];
+    for (let index = 0; index < this.count - 1; index += 1) {
+      const current = this.at(index);
+      const next = this.at(index + 1);
       if (!current || !next) {
         continue;
       }
@@ -154,6 +179,7 @@ export class InterpolationBuffer {
     return {
       tick: newer.state.tick,
       serverTime: renderServerTime,
+      abilityVfxCues: newer.state.abilityVfxCues,
       session: newer.state.session,
       players,
       bullets,

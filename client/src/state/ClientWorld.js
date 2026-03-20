@@ -24,12 +24,16 @@ export class ClientWorld {
     shapes = new Map();
     zones = new Map();
     powerUps = new Map();
+    lastAbilityVfxCues = [];
     session = null;
     tick = 0;
     serverTime = 0;
+    cachedSnapshot = null;
     applyDelta(delta) {
+        this.cachedSnapshot = null;
         this.tick = delta.tick;
         this.serverTime = delta.serverTime;
+        this.lastAbilityVfxCues = delta.abilityVfxCues ? [...delta.abilityVfxCues] : [];
         if (delta.session) {
             this.session = delta.session;
         }
@@ -66,9 +70,12 @@ export class ClientWorld {
         return this.getSnapshot();
     }
     getSnapshot() {
-        return {
+        if (this.cachedSnapshot)
+            return this.cachedSnapshot;
+        this.cachedSnapshot = {
             tick: this.tick,
             serverTime: this.serverTime,
+            abilityVfxCues: [...this.lastAbilityVfxCues],
             session: cloneSession(this.session),
             players: cloneMap(this.players),
             bullets: cloneMap(this.bullets),
@@ -76,6 +83,7 @@ export class ClientWorld {
             zones: cloneMap(this.zones),
             powerUps: cloneMap(this.powerUps)
         };
+        return this.cachedSnapshot;
     }
 }
 //# sourceMappingURL=ClientWorld.js.map

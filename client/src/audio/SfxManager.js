@@ -1,4 +1,5 @@
 const STORAGE_KEY = "tankes:sfx-settings";
+const MIN_AUDIBLE_VOLUME = 0.01;
 const clampVolume = (value) => Math.min(1, Math.max(0, value));
 const loadSettings = () => {
     const fallback = { muted: false, volume: 0.7 };
@@ -45,8 +46,8 @@ export class SfxManager {
         });
     }
     playShot(selfShot, volumeScale = 1) {
-        const distanceScale = Math.max(0, Math.min(1, volumeScale));
-        if (!selfShot && distanceScale <= 0.01) {
+        const distanceScale = clampVolume(volumeScale);
+        if (!selfShot && distanceScale <= MIN_AUDIBLE_VOLUME) {
             return;
         }
         this.playTone({
@@ -60,8 +61,8 @@ export class SfxManager {
         });
     }
     playHit(selfHit, volumeScale = 1) {
-        const distanceScale = Math.max(0, Math.min(1, volumeScale));
-        if (!selfHit && distanceScale <= 0.01) {
+        const distanceScale = clampVolume(volumeScale);
+        if (!selfHit && distanceScale <= MIN_AUDIBLE_VOLUME) {
             return;
         }
         this.playTone({
@@ -75,8 +76,8 @@ export class SfxManager {
         });
     }
     playDeath(selfDeath, volumeScale = 1) {
-        const distanceScale = Math.max(0, Math.min(1, volumeScale));
-        if (!selfDeath && distanceScale <= 0.01) {
+        const distanceScale = clampVolume(volumeScale);
+        if (!selfDeath && distanceScale <= MIN_AUDIBLE_VOLUME) {
             return;
         }
         this.playTone({
@@ -90,8 +91,8 @@ export class SfxManager {
         });
     }
     playRespawn(selfRespawn, volumeScale = 1) {
-        const distanceScale = Math.max(0, Math.min(1, volumeScale));
-        if (!selfRespawn && distanceScale <= 0.01) {
+        const distanceScale = clampVolume(volumeScale);
+        if (!selfRespawn && distanceScale <= MIN_AUDIBLE_VOLUME) {
             return;
         }
         this.playTone({
@@ -127,8 +128,8 @@ export class SfxManager {
         });
     }
     playZoneCapturing(selfCapturing, captureProgress = 0, volumeScale = 1) {
-        const distanceScale = Math.max(0, Math.min(1, volumeScale));
-        if (!selfCapturing && distanceScale <= 0.01) {
+        const distanceScale = clampVolume(volumeScale);
+        if (!selfCapturing && distanceScale <= MIN_AUDIBLE_VOLUME) {
             return;
         }
         const progress = Math.max(0, Math.min(1, captureProgress));
@@ -184,8 +185,8 @@ export class SfxManager {
         });
     }
     playZoneCaptured(selfCaptured, volumeScale = 1) {
-        const distanceScale = Math.max(0, Math.min(1, volumeScale));
-        if (!selfCaptured && distanceScale <= 0.01) {
+        const distanceScale = clampVolume(volumeScale);
+        if (!selfCaptured && distanceScale <= MIN_AUDIBLE_VOLUME) {
             return;
         }
         this.playTone({

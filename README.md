@@ -49,6 +49,43 @@ npm run dev
 npm run build
 ```
 
+### Docker
+
+```bash
+docker compose up --build
+```
+
+Esto levanta dos servicios:
+
+- Cliente estático en `http://localhost:8080`
+- Servidor Socket.io en `http://localhost:3001`
+
+El cliente en Docker usa el fallback ya incluido en runtime y, si no configurás `VITE_SERVER_URL`, intenta conectar al mismo host del navegador en el puerto `3001`.
+
+Variables útiles para compose:
+
+- `CLIENT_PORT` publica el frontend localmente (default `8080`)
+- `PORT` publica el server localmente (default `3001`)
+- `VITE_SERVER_URL` fuerza la URL del socket en el build del cliente si necesitás apuntar a otro host
+- `NET_CODEC` cambia el codec del server (`msgpack` por defecto)
+
+Podés copiar `.env.example` a `.env` y ajustar esos valores sin tocar `docker-compose.yml`.
+
+Ejemplo con URL explícita del server:
+
+```bash
+$env:VITE_SERVER_URL='http://localhost:3001'
+docker compose up --build
+```
+
+Si antes probaste otros puertos en la misma terminal de PowerShell, limpiá variables persistidas antes de volver al default:
+
+```bash
+Remove-Item Env:PORT -ErrorAction SilentlyContinue
+Remove-Item Env:CLIENT_PORT -ErrorAction SilentlyContinue
+Remove-Item Env:VITE_SERVER_URL -ErrorAction SilentlyContinue
+```
+
 ### Typecheck (runtime MVP)
 
 ```bash
@@ -80,6 +117,7 @@ Variables útiles:
 
 - **No conecta al servidor**: verificar que `npm run dev` esté corriendo en raíz y que `PORT`/`VITE_SERVER_URL` coincidan.
 - **Puerto ocupado (`5173` o `3001`)**: liberar puerto o cambiar `PORT` para server y ajustar `VITE_SERVER_URL` en client.
+- **Docker marca contenedor unhealthy**: probar `docker compose logs server client` y verificar `http://localhost:3001/health` o el puerto alternativo que estés publicando.
 - **Cambios en shared no reflejan**: reiniciar `npm run dev` desde raíz para asegurar rebuild/watch de `shared`.
 - **Cliente queda en pantalla de inicio**: revisar consola del navegador y logs del server para eventos `join`/`join:ack`.
 - **Typecheck falla localmente**: ejecutar `npm run typecheck` en raíz y revisar paquete específico (`-w @tankes/server` o `-w @tankes/client`).

@@ -2,6 +2,7 @@ import { createServer as createNetServer } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { io, type Socket } from "socket.io-client";
 import {
+  AbilitySlot,
   createNetworkCodec,
   MatchPhase,
   NetworkCodecMode,
@@ -27,6 +28,8 @@ interface ClientProbe {
   session: MatchState | null;
   roundEndedEvents: RoundEndedPayload[];
   roundResetEvents: RoundResetPayload[];
+  abilityOffers: Array<{ slot: string; options: string[] }>;
+  abilityCastRejectedReasons: string[];
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,7 +93,9 @@ const connectClient = async (url: string, nickname: string, resumeToken?: string
     players: new Map<string, PlayerNetState>(),
     session: null,
     roundEndedEvents: [],
-    roundResetEvents: []
+    roundResetEvents: [],
+    abilityOffers: [],
+    abilityCastRejectedReasons: []
   };
 
   socket.on(SocketEvents.WorldUpdate, (payload: ArrayBuffer | Uint8Array) => {
@@ -115,6 +120,14 @@ const connectClient = async (url: string, nickname: string, resumeToken?: string
 
   socket.on(SocketEvents.RoundReset, (payload: RoundResetPayload) => {
     probe.roundResetEvents.push(payload);
+  });
+
+  socket.on(SocketEvents.AbilityOffer, (payload: { slot: string; options: string[] }) => {
+    probe.abilityOffers.push(payload);
+  });
+
+  socket.on(SocketEvents.AbilityCastRejected, (payload: { reason: string }) => {
+    probe.abilityCastRejectedReasons.push(payload.reason);
   });
 
   const ack = await new Promise<JoinAckPayload>((resolve, reject) => {
@@ -249,11 +262,100 @@ const forceRoundEndAndImmediateReset = (gateway: SocketGateway, winnerPlayerId: 
   internals.world.nextRoundStartsAtMs = Date.now() - 1;
 };
 
+const forceAwardXp = (gateway: SocketGateway, playerId: string, xp: number): void => {
+  const internals = gateway as unknown as {
+    world: {
+      getPlayer: (id: string) =>
+        | {
+            xp: number;
+            level: number;
+            upgradePoints: number;
+            updatedAtTick: number;
+          }
+        | undefined;
+      awardXp: (
+        player: {
+          xp: number;
+          level: number;
+          upgradePoints: number;
+          updatedAtTick: number;
+        },
+        xpGain: number,
+        tick: number
+      ) => void;
+    };
+    tick: number;
+  };
+
+  const player = internals.world.getPlayer(playerId);
+  if (!player) {
+    throw new Error("player not found for xp award");
+  }
+
+  internals.world.awardXp(player, xp, internals.tick + 1);
+};
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("SocketGateway session validation", () => {
+  it(
+    "rejects ability casts before unlock and emits ability offers when level threshold is reached",
+    async () => {
+      await withGateway(async (url, gateway) => {
+        const player = await connectClient(url, "AbilityUser");
+        const observer = await connectClient(url, "Observer");
+
+        try {
+          await waitFor("initial sessions", () => (player.session && observer.session ? true : null));
+
+          player.socket.emit(SocketEvents.CastAbility, {
+            slot: AbilitySlot.Slot1
+          });
+
+          await waitFor("cast rejected before unlock", () =>
+            player.abilityCastRejectedReasons.includes("not_unlocked") ? true : null
+          );
+
+          forceAwardXp(gateway, player.playerId, 100);
+
+          const offer = await waitFor("ability offer at level 2", () => {
+            const latest = player.abilityOffers.at(-1);
+            if (!latest || latest.slot !== AbilitySlot.RightClick || latest.options.length !== 3) {
+              return null;
+            }
+            return latest;
+          });
+
+          player.socket.emit(SocketEvents.ChooseAbility, {
+            slot: AbilitySlot.RightClick,
+            abilityId: offer.options[0]
+          });
+
+          await waitFor("self runtime loadout synced", () => {
+            const me = player.players.get(player.playerId);
+            const selected = me?.abilityRuntime?.loadout?.[AbilitySlot.RightClick];
+            return selected ? true : null;
+          });
+
+          await waitFor("observer sees player without detailed runtime", () => {
+            const observed = observer.players.get(player.playerId);
+            if (!observed) {
+              return null;
+            }
+
+            return observed.abilityRuntime === undefined ? true : null;
+          });
+        } finally {
+          await disconnectClient(player);
+          await disconnectClient(observer);
+        }
+      });
+    },
+    25_000
+  );
+
   it(
     "synchronizes kills/deaths and supports reconnect without score corruption during round",
     async () => {

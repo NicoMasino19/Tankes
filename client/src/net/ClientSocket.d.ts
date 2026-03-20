@@ -1,8 +1,10 @@
-import { type InputState, type JoinAckPayload, type RoundEndedPayload, type RoundResetPayload, type UpgradeStatPayload, type WorldDeltaSnapshot } from "@tankes/shared";
+import { type AbilityId, type AbilityCastRejectedPayload, type AbilityOfferPayload, type AbilitySlot, type InputState, type JoinAckPayload, type RoundEndedPayload, type RoundResetPayload, type UpgradeStatPayload, type WorldDeltaSnapshot } from "@tankes/shared";
 interface ClientSocketOptions {
     serverUrl: string;
     onJoinAck: (payload: JoinAckPayload) => void;
     onWorldDelta: (delta: WorldDeltaSnapshot) => void;
+    onAbilityOffer?: (payload: AbilityOfferPayload) => void;
+    onAbilityCastRejected?: (payload: AbilityCastRejectedPayload) => void;
     onRoundEnded?: (payload: RoundEndedPayload) => void;
     onRoundReset?: (payload: RoundResetPayload) => void;
 }
@@ -22,5 +24,10 @@ export declare class ClientSocket {
     getPingMs(): number | null;
     sendInput(input: InputState): void;
     upgradeStat(payload: UpgradeStatPayload): void;
+    chooseAbility(payload: {
+        slot: AbilitySlot;
+        abilityId: AbilityId;
+    }): void;
+    castAbility(slot: AbilitySlot): void;
 }
 export {};

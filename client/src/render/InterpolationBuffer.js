@@ -14,8 +14,11 @@ const lerpAngle = (a, b, t) => {
     const delta = normalizeAngle(b - a);
     return normalizeAngle(a + delta * t);
 };
+const RING_CAPACITY = 60;
 export class InterpolationBuffer {
-    history = [];
+    ring = new Array(RING_CAPACITY).fill(null);
+    head = 0;
+    count = 0;
     serverOffsetMs = 0;
     push(state) {
         if (this.serverOffsetMs === 0) {
@@ -25,21 +28,41 @@ export class InterpolationBuffer {
             const sample = Date.now() - state.serverTime;
             this.serverOffsetMs = this.serverOffsetMs * 0.9 + sample * 0.1;
         }
-        this.history.push({ serverTime: state.serverTime, state });
-        if (this.history.length > 60) {
-            this.history.shift();
+        const writeIndex = (this.head + this.count) % RING_CAPACITY;
+        this.ring[writeIndex] = { serverTime: state.serverTime, state };
+        if (this.count < RING_CAPACITY) {
+            this.count += 1;
+        }
+        else {
+            this.head = (this.head + 1) % RING_CAPACITY;
         }
     }
+    at(index) {
+        if (index < 0 || index >= this.count)
+            return null;
+        return this.ring[(this.head + index) % RING_CAPACITY] ?? null;
+    }
     getInterpolated() {
-        const firstEntry = this.history[0];
+        const firstEntry = this.at(0);
         if (!firstEntry) {
-            return { tick: 0, serverTime: 0, session: null, players: [], bullets: [], shapes: [], zones: [], powerUps: [] };
+            return {
+                tick: 0,
+                serverTime: 0,
+                abilityVfxCues: [],
+                session: null,
+                players: [],
+                bullets: [],
+                shapes: [],
+                zones: [],
+                powerUps: []
+            };
         }
-        if (this.history.length === 1) {
+        if (this.count === 1) {
             const only = firstEntry.state;
             return {
                 tick: only.tick,
                 serverTime: only.serverTime,
+                abilityVfxCues: only.abilityVfxCues,
                 session: only.session,
                 players: Array.from(only.players.values()),
                 bullets: Array.from(only.bullets.values()),
@@ -50,10 +73,10 @@ export class InterpolationBuffer {
         }
         const renderServerTime = Date.now() - this.serverOffsetMs - INTERPOLATION_DELAY_MS;
         let older = firstEntry;
-        let newer = this.history[this.history.length - 1] ?? firstEntry;
-        for (let index = 0; index < this.history.length - 1; index += 1) {
-            const current = this.history[index];
-            const next = this.history[index + 1];
+        let newer = this.at(this.count - 1) ?? firstEntry;
+        for (let index = 0; index < this.count - 1; index += 1) {
+            const current = this.at(index);
+            const next = this.at(index + 1);
             if (!current || !next) {
                 continue;
             }
@@ -111,6 +134,7 @@ export class InterpolationBuffer {
         return {
             tick: newer.state.tick,
             serverTime: renderServerTime,
+            abilityVfxCues: newer.state.abilityVfxCues,
             session: newer.state.session,
             players,
             bullets,

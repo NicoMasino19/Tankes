@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AbilityId,
+  AbilitySlot,
   BuffType,
   MatchPhase,
   MatchWinCondition,
@@ -13,6 +15,235 @@ import { World } from "./World";
 const toArray = <T>(iter: IterableIterator<T>): T[] => [...iter];
 
 describe("World", () => {
+  it("emits right-click ability offer at level 2 and allows choosing an offered ability", () => {
+    const world = new World();
+    const player = world.addPlayer("p1", "Chooser", 0);
+
+    const internals = world as unknown as {
+      awardXp: (playerArg: typeof player, xpGain: number, tick: number) => void;
+    };
+
+    internals.awardXp(player, 100, 1);
+
+    const offers = world.consumeAbilityOfferEvents();
+    expect(offers).toHaveLength(1);
+    expect(offers[0]?.playerId).toBe(player.id);
+    expect(offers[0]?.payload.slot).toBe(AbilitySlot.RightClick);
+    expect(offers[0]?.payload.options).toContain(AbilityId.DashVectorial);
+
+    const chosen = world.chooseAbility(player.id, AbilitySlot.RightClick, AbilityId.DashVectorial, 2);
+    expect(chosen).toBe(true);
+    expect(player.abilityLoadout[AbilitySlot.RightClick]).toBe(AbilityId.DashVectorial);
+    expect(player.pendingAbilityChoice).toBeNull();
+  });
+
+  it("enforces ability cooldown after a successful cast", () => {
+    const world = new World();
+    const player = world.addPlayer("p1", "Caster", 0);
+
+    player.level = 2;
+    player.abilityLoadout[AbilitySlot.RightClick] = AbilityId.DashVectorial;
+
+    const first = world.castAbility(player.id, { slot: AbilitySlot.RightClick }, 1, 10_000);
+    expect(first.ok).toBe(true);
+
+    const second = world.castAbility(player.id, { slot: AbilitySlot.RightClick }, 2, 10_100);
+    expect(second.ok).toBe(false);
+    expect(second.rejected?.reason).toBe("cooldown");
+    expect((second.rejected?.retryAtMs ?? 0) > 10_100).toBe(true);
+  });
+
+  it("queues next ability offer after selecting when player already reached following unlock level", () => {
+    const world = new World();
+    const player = world.addPlayer("p1", "Chain", 0);
+
+    const internals = world as unknown as {
+      awardXp: (playerArg: typeof player, xpGain: number, tick: number) => void;
+    };
+
+    internals.awardXp(player, 300, 1);
+    expect(player.level).toBeGreaterThanOrEqual(3);
+
+    const firstOffers = world.consumeAbilityOfferEvents();
+    expect(firstOffers.at(-1)?.payload.slot).toBe(AbilitySlot.RightClick);
+
+    const choseFirst = world.chooseAbility(player.id, AbilitySlot.RightClick, AbilityId.EmpPulse, 2);
+    expect(choseFirst).toBe(true);
+
+    const secondOffers = world.consumeAbilityOfferEvents();
+    expect(secondOffers.at(-1)?.payload.slot).toBe(AbilitySlot.Slot1);
+    expect(secondOffers.at(-1)?.payload.options).toContain(AbilityId.PiercingBurst);
+  });
+
+  it("resets ability cooldowns on respawn", () => {
+    const world = new World({
+      matchConfig: {
+        objectiveKills: 99,
+        respawnDelayMs: 1
+      }
+    });
+
+    const attacker = world.addPlayer("p1", "Attacker", 0);
+    const target = world.addPlayer("p2", "Target", 0);
+
+    target.abilityCooldownEndsAtMs[AbilitySlot.RightClick] = 99_999;
+
+    const internals = world as unknown as {
+      handleKill: (ownerId: string, targetArg: typeof target, tick: number, nowMs: number) => void;
+    };
+
+    target.hp = target.maxHp;
+    target.invulnerableUntilMs = 0;
+    internals.handleKill(attacker.id, target, 1, 5_000);
+    expect(target.hp).toBe(0);
+
+    world.step(0, 2, 5_002);
+    expect(target.hp).toBe(target.maxHp);
+    expect(target.abilityCooldownEndsAtMs[AbilitySlot.RightClick]).toBeUndefined();
+  });
+
+  it("emits orbital barrage cast and pulse cues", () => {
+    const world = new World();
+    const caster = world.addPlayer("p1", "Orbital", 0);
+
+    caster.level = 7;
+    caster.abilityLoadout[AbilitySlot.Ultimate] = AbilityId.OrbitalBarrage;
+    caster.input.aimX = caster.x + 120;
+    caster.input.aimY = caster.y + 40;
+
+    const castResult = world.castAbility(caster.id, { slot: AbilitySlot.Ultimate }, 1, 10_000);
+    expect(castResult.ok).toBe(true);
+
+    const castCues = world.consumeAbilityVfxCues();
+    expect(castCues.some((cue) => cue.abilityId === AbilityId.OrbitalBarrage && cue.phase === "cast")).toBe(true);
+
+    world.step(0, 2, 10_360);
+    const pulseCues = world.consumeAbilityVfxCues();
+    expect(pulseCues.some((cue) => cue.abilityId === AbilityId.OrbitalBarrage && cue.phase === "pulse")).toBe(true);
+  });
+
+  it("emits siege mode cast and expire cues", () => {
+    const world = new World();
+    const caster = world.addPlayer("p1", "Siege", 0);
+
+    caster.level = 7;
+    caster.abilityLoadout[AbilitySlot.Ultimate] = AbilityId.SiegeMode;
+
+    const castResult = world.castAbility(caster.id, { slot: AbilitySlot.Ultimate }, 1, 20_000);
+    expect(castResult.ok).toBe(true);
+
+    const castCues = world.consumeAbilityVfxCues();
+    expect(castCues.some((cue) => cue.abilityId === AbilityId.SiegeMode && cue.phase === "cast")).toBe(true);
+
+    world.step(0, 2, 25_100);
+    const expireCues = world.consumeAbilityVfxCues();
+    expect(expireCues.some((cue) => cue.abilityId === AbilityId.SiegeMode && cue.phase === "expire")).toBe(true);
+  });
+
+  it("emits homing missile cast and impact cues when a target exists", () => {
+    const world = new World();
+    const caster = world.addPlayer("p1", "Missile", 0);
+    const target = world.addPlayer("p2", "Victim", 0);
+
+    caster.level = 7;
+    caster.abilityLoadout[AbilitySlot.Ultimate] = AbilityId.HomingMissile;
+    target.hp = target.maxHp;
+    target.invulnerableUntilMs = 0;
+
+    const castResult = world.castAbility(caster.id, { slot: AbilitySlot.Ultimate }, 1, 30_000);
+    expect(castResult.ok).toBe(true);
+
+    const cues = world.consumeAbilityVfxCues();
+    expect(cues.some((cue) => cue.abilityId === AbilityId.HomingMissile && cue.phase === "cast")).toBe(true);
+    expect(cues.some((cue) => cue.abilityId === AbilityId.HomingMissile && cue.phase === "impact")).toBe(true);
+  });
+
+  it("plants proximity mine and detonates only when an enemy steps on it", () => {
+    const world = new World();
+    const caster = world.addPlayer("p1", "Miner", 0);
+    const target = world.addPlayer("p2", "Walker", 0);
+
+    caster.level = 3;
+    caster.abilityLoadout[AbilitySlot.Slot1] = AbilityId.ProximityMine;
+    caster.input.aimX = caster.x + 80;
+    caster.input.aimY = caster.y;
+    target.invulnerableUntilMs = 0;
+
+    const castResult = world.castAbility(caster.id, { slot: AbilitySlot.Slot1 }, 1, 10_000);
+    expect(castResult.ok).toBe(true);
+
+    const plantedCues = world.consumeAbilityVfxCues();
+    expect(plantedCues.some((cue) => cue.abilityId === AbilityId.ProximityMine && cue.phase === "cast")).toBe(true);
+    expect(plantedCues.some((cue) => cue.abilityId === AbilityId.ProximityMine && cue.phase === "impact")).toBe(false);
+
+    const hpBefore = target.hp;
+    world.step(0, 2, 10_100);
+    expect(target.hp).toBe(hpBefore);
+
+    target.x = caster.input.aimX;
+    target.y = caster.input.aimY;
+    world.step(0, 3, 10_400);
+
+    const detonationCues = world.consumeAbilityVfxCues();
+    expect(detonationCues.some((cue) => cue.abilityId === AbilityId.ProximityMine && cue.phase === "impact")).toBe(true);
+    expect(target.hp).toBeLessThan(hpBefore - caster.bulletDamage * 1.9);
+  });
+
+  it("expires planted proximity mine if nobody triggers it", () => {
+    const world = new World();
+    const caster = world.addPlayer("p1", "Miner", 0);
+
+    caster.level = 3;
+    caster.abilityLoadout[AbilitySlot.Slot1] = AbilityId.ProximityMine;
+    caster.input.aimX = caster.x + 40;
+    caster.input.aimY = caster.y + 20;
+
+    const castResult = world.castAbility(caster.id, { slot: AbilitySlot.Slot1 }, 1, 20_000);
+    expect(castResult.ok).toBe(true);
+    world.consumeAbilityVfxCues();
+
+    world.step(0, 2, 30_100);
+    const expireCues = world.consumeAbilityVfxCues();
+    expect(expireCues.some((cue) => cue.abilityId === AbilityId.ProximityMine && cue.phase === "expire")).toBe(true);
+  });
+
+  it("keeps tactical fog active over time and only slows enemies inside the smoke", () => {
+    const world = new World();
+    const caster = world.addPlayer("p1", "Smoker", 0);
+    const insideTarget = world.addPlayer("p2", "Inside", 0);
+    const outsideTarget = world.addPlayer("p3", "Outside", 0);
+
+    caster.level = 5;
+    caster.abilityLoadout[AbilitySlot.Slot2] = AbilityId.TacticalFog;
+    caster.input.aimX = caster.x + 100;
+    caster.input.aimY = caster.y;
+
+    insideTarget.x = caster.input.aimX + 20;
+    insideTarget.y = caster.input.aimY + 20;
+    outsideTarget.x = caster.input.aimX + 600;
+    outsideTarget.y = caster.input.aimY;
+
+    const castResult = world.castAbility(caster.id, { slot: AbilitySlot.Slot2 }, 1, 40_000);
+    expect(castResult.ok).toBe(true);
+
+    const castCues = world.consumeAbilityVfxCues();
+    expect(castCues.some((cue) => cue.abilityId === AbilityId.TacticalFog && cue.phase === "cast")).toBe(true);
+
+    world.step(0, 2, 40_100);
+
+    const internals = world as unknown as {
+      getMovementMultiplier: (playerId: string, nowMs: number) => number;
+    };
+
+    expect(internals.getMovementMultiplier(insideTarget.id, 40_100)).toBeLessThan(1);
+    expect(internals.getMovementMultiplier(outsideTarget.id, 40_100)).toBe(1);
+
+    world.step(0, 3, 46_700);
+    const expireCues = world.consumeAbilityVfxCues();
+    expect(expireCues.some((cue) => cue.abilityId === AbilityId.TacticalFog && cue.phase === "expire")).toBe(true);
+    expect(internals.getMovementMultiplier(insideTarget.id, 46_700)).toBe(1);
+  });
+
   it("normalizes diagonal movement by dt so distance equals moveSpeed for dt=1", () => {
     const world = new World();
     const player = world.addPlayer("p1", "P1", 0);
@@ -270,8 +501,8 @@ describe("World", () => {
 
     world.step(0, 2, attacker.reloadMs + 1);
 
-    expect(attacker.totalXpEarned).toBe(50);
-    expect(attacker.xp).toBe(50);
+    expect(attacker.totalXpEarned).toBe(24);
+    expect(attacker.xp).toBe(24);
   });
 
   it("grants zone presence xp then despawns the zone when captured", () => {

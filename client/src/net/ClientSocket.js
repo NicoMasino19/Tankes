@@ -56,8 +56,13 @@ export class ClientSocket {
             this.options.onJoinAck(payload);
         });
         socket.on(SocketEvents.WorldUpdate, (payload) => {
-            const delta = this.codec.decodeWorldUpdate(payload);
-            this.options.onWorldDelta(delta);
+            try {
+                const delta = this.codec.decodeWorldUpdate(payload);
+                this.options.onWorldDelta(delta);
+            }
+            catch {
+                // Malformed snapshot — drop frame silently
+            }
         });
         socket.on(SocketEvents.RoundEnded, (payload) => {
             this.options.onRoundEnded?.(payload);
@@ -76,6 +81,12 @@ export class ClientSocket {
             }
             this.smoothedPingMs =
                 this.smoothedPingMs + (roundTripMs - this.smoothedPingMs) * NET_PING_SMOOTHING_ALPHA;
+        });
+        socket.on(SocketEvents.AbilityOffer, (payload) => {
+            this.options.onAbilityOffer?.(payload);
+        });
+        socket.on(SocketEvents.AbilityCastRejected, (payload) => {
+            this.options.onAbilityCastRejected?.(payload);
         });
         return socket;
     }
@@ -111,6 +122,12 @@ export class ClientSocket {
     }
     upgradeStat(payload) {
         this.socket?.emit(SocketEvents.UpgradeStat, payload);
+    }
+    chooseAbility(payload) {
+        this.socket?.emit(SocketEvents.ChooseAbility, payload);
+    }
+    castAbility(slot) {
+        this.socket?.emit(SocketEvents.CastAbility, { slot });
     }
 }
 //# sourceMappingURL=ClientSocket.js.map
