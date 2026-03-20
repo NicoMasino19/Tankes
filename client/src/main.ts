@@ -1,4 +1,4 @@
-import { type PlayerNetState } from "@tankes/shared";
+import { SERVER_TICK_RATE, type PlayerNetState } from "@tankes/shared";
 import "./index.css";
 import { SfxManager } from "./audio/SfxManager";
 import { InputController } from "./input/InputController";
@@ -54,7 +54,7 @@ const computeDistanceVolume = (distance: number): number => {
 
 let selfId: string | null = null;
 let joined = false;
-let latestInterpolated = interpolation.getInterpolated();
+let latestInterpolated = interpolation.getInterpolated(selfId);
 
 const statsHud = new StatsHud(
   (stat) => {
@@ -259,7 +259,7 @@ const loop = (now: number): void => {
   lastFrame = now;
   accumulator += deltaSeconds;
 
-  latestInterpolated = interpolation.getInterpolated();
+  latestInterpolated = interpolation.getInterpolated(selfId);
   renderer.render(latestInterpolated, selfId);
 
   const selfPlayer = latestInterpolated.players.find((player) => player.id === selfId);

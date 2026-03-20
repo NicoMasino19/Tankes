@@ -127,6 +127,10 @@ export class InterpolationBuffer {
 
     const players: PlayerNetState[] = [];
     for (const [id, newPlayer] of newer.state.players) {
+      if (localPlayerId && id === localPlayerId) {
+        players.push(newPlayer);
+        continue;
+      }
       const oldPlayer = older.state.players.get(id);
       if (!oldPlayer) {
         players.push(newPlayer);
