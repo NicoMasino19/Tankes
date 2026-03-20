@@ -6,3 +6,8 @@ dist
 .env
 .env.local
 .env.*.local
+
+# Compiled TypeScript output (client)
+client/src/**/*.js
+client/src/**/*.js.map
+client/src/**/*.d.ts
