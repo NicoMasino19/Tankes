@@ -20,6 +20,7 @@ export declare class ClientWorld {
     private session;
     private tick;
     private serverTime;
+    private cachedSnapshot;
     applyDelta(delta: WorldDeltaSnapshot): WorldState;
     getSnapshot(): WorldState;
 }

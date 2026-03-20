@@ -53,6 +53,7 @@ export declare class CanvasRenderer {
         y: number;
     };
     render(world: InterpolatedWorld, selfId: string | null): void;
+    private get vfxEffects();
     private ingestAbilityVfxCues;
     triggerShotEffect(x: number, y: number, rotation: number): void;
     triggerHitEffect(x: number, y: number, selfHit: boolean): void;

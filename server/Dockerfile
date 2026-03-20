@@ -30,6 +30,9 @@ COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/shared/package.json ./shared/package.json
 COPY --from=build /app/shared/dist ./shared/dist
 
+RUN addgroup -g 1001 -S appgroup && adduser -S appuser -u 1001 -G appgroup
+USER appuser
+
 EXPOSE 3001
 
 CMD ["npm", "run", "start", "-w", "@tankes/server"]
